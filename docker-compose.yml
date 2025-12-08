@@ -1,0 +1,32 @@
+# Redmine RAG 챗봇 서비스
+# Vector DB는 Airflow가 별도로 관리
+# 챗봇은 Vector DB를 읽기 전용으로만 참조
+
+services:
+  # RAG 챗봇 웹 서비스
+  chatbot:
+    build: ./chatbot
+    container_name: redmine-chatbot
+    environment:
+      - VECTORDB_PATH=/vectordb/chroma_db_v0.1.2
+      - COLLECTION_NAME=redmine_issues_raw_v2
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - PORT=50001
+      - GUNICORN_WORKERS=1
+      - LOG_LEVEL=info
+    volumes:
+      # Vector DB 마운트 (143 서버의 vectordb 사용)
+      # 143 서버에서 실행 시: ./vectordb
+      # 145 서버에서 실행 시: /data/143/member/jks/redmine_RAG/vectordb
+      - ${VECTORDB_HOST_PATH:-./vectordb}:/vectordb
+      # 로그 저장 (선택사항)
+      - ./chatbot/logs:/app/logs
+    ports:
+      - "50001:50001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
