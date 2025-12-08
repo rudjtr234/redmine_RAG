@@ -13,7 +13,7 @@ Commit logs
 
 Dataset 정보
 
-Model 성능 (Accuracy, F1, Dice 등 기록)
+Model 성능 (Accuracy, F1, Dice 등)
 
 🔹 처리 과정
 
@@ -36,11 +36,12 @@ sentence-transformers/all-mpnet-base-v2
 
 문서 → 1024~1536 차원 벡터 변환
 
-ChromaDB 에 저장하여 문서 검색(top-k retrieval) 구현
+ChromaDB에 저장하여 top-k retrieval 구현
 
 Airflow 기반 자동 업데이트 가능
 
 🔁 Redmine RAG 전체 흐름도
+
 
 ┌─────────────────────────────────────────────┐
 │ 사용자가 질문 입력                          │
@@ -104,4 +105,3 @@ Airflow 기반 자동 업데이트 가능
 │ 5) UI/CLI에 최종 결과 표시                  │
 │ 예: "Dice Score = 0.3489 (#497)"            │
 └─────────────────────────────────────────────┘
-
