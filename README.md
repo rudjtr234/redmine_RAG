@@ -1,48 +1,39 @@
-🧠 Redmine RAG 시스템 개요
+h1. 🧠 Redmine RAG 시스템 개요
 
-Redmine RAG 시스템은 사내 Redmine 이슈·위키·모델 성능 기록 데이터를 자동 수집하고
-이를 Vector DB 기반 검색(Retrieval) + LLM 요약/표 생성과 결합한
-AI 기반 실험/모델 조회 어시스턴트입니다.
+Redmine RAG 시스템은 사내 Redmine 이슈·위키·모델 성능 기록 데이터를 자동 수집하고 이를 Vector DB 기반 검색(Retrieval) + LLM 요약/표 생성과 결합한 AI 기반 실험/모델 조회 어시스턴트입니다.
 
-📥 1. Redmine Data Extraction (ETL)
-🔹 자동 수집 대상
+h2. 📥 1. Redmine Data Extraction (ETL)
 
-Issue / Wiki
+h3. 🔹 자동 수집 대상
 
-Commit logs
+* Issue / Wiki
+* Commit logs
+* Dataset 정보
+* Model 성능 (Accuracy, F1, Dice 등)
 
-Dataset 정보
+h3. 🔹 처리 과정
 
-Model 성능 (Accuracy, F1, Dice 등)
+* Redmine API로 Raw JSON 수집
+* 필드 정제(불필요한 텍스트 제거)
+* Issue·Journal 통합 변환
+* 정제 데이터(JSONL) 저장 → 임베딩 단계로 전달
 
-🔹 처리 과정
+h2. 🔎 2. 임베딩 & VectorDB 구축
 
-Redmine API로 Raw JSON 수집
+h3. 🔹 Embedding 모델
 
-필드 정제(불필요한 텍스트 제거)
+* sentence-transformers/all-mpnet-base-v2
+* 또는 text-embedding-3-large
 
-Issue·Journal 통합 변환
+h3. 🔹 저장 방식
 
-정제 데이터(JSONL) 저장 → 임베딩 단계로 전달
+* 문서 → 1024~1536 차원 벡터 변환
+* ChromaDB에 저장하여 top-k retrieval 구현
+* Airflow 기반 자동 업데이트 가능
 
-🔎 2. 임베딩 & VectorDB 구축
-🔹 Embedding 모델
+h2. 🔁 Redmine RAG 전체 흐름도
 
-sentence-transformers/all-mpnet-base-v2
-
-또는 text-embedding-3-large
-
-🔹 저장 방식
-
-문서 → 1024~1536 차원 벡터 변환
-
-ChromaDB에 저장하여 top-k retrieval 구현
-
-Airflow 기반 자동 업데이트 가능
-
-🔁 Redmine RAG 전체 흐름도
-
-
+<pre>
 ┌─────────────────────────────────────────────┐
 │ 사용자가 질문 입력                          │
 │ 예: "Aialpa-TSR-brst v0.5.0 dice score?"    │
@@ -105,3 +96,4 @@ Airflow 기반 자동 업데이트 가능
 │ 5) UI/CLI에 최종 결과 표시                  │
 │ 예: "Dice Score = 0.3489 (#497)"            │
 └─────────────────────────────────────────────┘
+</pre>
