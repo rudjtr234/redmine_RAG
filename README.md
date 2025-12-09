@@ -1,99 +1,135 @@
-h1. 🧠 Redmine RAG 시스템 개요
+# Redmine RAG 챗봇
 
-Redmine RAG 시스템은 사내 Redmine 이슈·위키·모델 성능 기록 데이터를 자동 수집하고 이를 Vector DB 기반 검색(Retrieval) + LLM 요약/표 생성과 결합한 AI 기반 실험/모델 조회 어시스턴트입니다.
+MTS BIO-DT 팀의 Redmine 실험 데이터를 자연어로 검색할 수 있는 RAG 기반 챗봇 시스템
 
-h2. 📥 1. Redmine Data Extraction (ETL)
+## 📁 디렉토리 구조
 
-h3. 🔹 자동 수집 대상
+```
+chatbot/
+├── src/
+│   ├── app.py                    # Flask 웹 애플리케이션
+│   ├── rag_engine.py            # RAG 로직 (ChromaDB + Gemini)
+│   └── config/
+│       └── gunicorn_config.py   # Gunicorn 서버 설정
+├── templates/
+│   └── chat.html                # 웹 UI
+├── logs/                         # 로그 파일 저장
+├── Dockerfile                    # Docker 이미지 빌드 설정
+└── requirement.txt              # Python 패키지 의존성
+```
 
-* Issue / Wiki
-* Commit logs
-* Dataset 정보
-* Model 성능 (Accuracy, F1, Dice 등)
+## 🚀 실행 방법
 
-h3. 🔹 처리 과정
+### Docker Compose 사용 (권장)
 
-* Redmine API로 Raw JSON 수집
-* 필드 정제(불필요한 텍스트 제거)
-* Issue·Journal 통합 변환
-* 정제 데이터(JSONL) 저장 → 임베딩 단계로 전달
+```bash
+# 프로젝트 루트에서
+cd /data/member/jks/redmine_RAG
 
-h2. 🔎 2. 임베딩 & VectorDB 구축
+# 서비스 시작
+sudo docker compose up -d
 
-h3. 🔹 Embedding 모델
+# 로그 확인
+sudo docker compose logs -f chatbot
 
-* sentence-transformers/all-mpnet-base-v2
-* 또는 text-embedding-3-large
+# 서비스 중지
+sudo docker compose down
+```
 
-h3. 🔹 저장 방식
+### 로컬 실행
 
-* 문서 → 1024~1536 차원 벡터 변환
-* ChromaDB에 저장하여 top-k retrieval 구현
-* Airflow 기반 자동 업데이트 가능
+```bash
+cd /data/member/jks/redmine_RAG/chatbot
 
-h2. 🔁 Redmine RAG 전체 흐름도
+# 의존성 설치
+pip install -r requirement.txt
 
-<pre>
-┌─────────────────────────────────────────────┐
-│ 사용자가 질문 입력                          │
-│ 예: "Aialpa-TSR-brst v0.5.0 dice score?"    │
-└─────────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────┐
-│ Flask /chat 엔드포인트 도착                 │
-│ user_query = request.json["message"]        │
-└─────────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────┐
-│ 키워드 기반 모드 판별: 일반 질문? / RAG?    │
-│ ("v0", "accuracy", "f1" 포함 → RAG 모드)    │
-└─────────────────────────────────────────────┘
-                      │
-                      ▼
-             ┌────────────────┐
-             │    RAG 모드    │
-             └────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────┐
-│ 1) Query Embedding & 문서 검색              │
-│ - SentenceTransformer로 query 임베딩        │
-│ - ChromaDB에서 top-k 문서 검색              │
-└─────────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────┐
-│ 1-2) 버전 필터링                            │
-│ - 쿼리에서 "v0.5.0" 등 버전 추출            │
-│ - 해당 버전이 포함된 이슈만 추출           │
-└─────────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────┐
-│ 2) LLM 프롬프트 구성                        │
-│ (a) 문서에서 성능 지표만 추출 (Accuracy 등) │
-│ (b) 관련 문장만 발췌하여 요약              │
-│ (c) 이슈별 성능 블록으로 구조화            │
-│ (d) LLM에게 표 생성/요약하도록 패키징      │
-└─────────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────┐
-│ 3) Qwen2.5 (Ollama) 호출                    │
-│ - 자연어 표 / 요약 생성                     │
-└─────────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────┐
-│ 4) Flask가 JSON으로 응답 반환               │
-│ {"reply": "...LLM 출력..."}                 │
-└─────────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────┐
-│ 5) UI/CLI에 최종 결과 표시                  │
-│ 예: "Dice Score = 0.3489 (#497)"            │
-└─────────────────────────────────────────────┘
-</pre>
+# 환경변수 설정
+export VECTORDB_PATH=/vectordb/chroma_db_v0.1.2
+export COLLECTION_NAME=redmine_issues_raw_v2
+export GEMINI_API_KEY=your-api-key
+
+# 개발 서버 실행
+python src/app.py
+
+# 또는 Gunicorn으로 실행
+gunicorn --config src/config/gunicorn_config.py src.app:app
+```
+
+## 🔧 환경변수
+
+| 변수명 | 설명 | 기본값 |
+|--------|------|--------|
+| `VECTORDB_PATH` | ChromaDB 경로 | `/vectordb/chroma_db_v0.1.2` |
+| `COLLECTION_NAME` | 컬렉션 이름 | `redmine_issues_raw_v2` |
+| `GEMINI_API_KEY` | Google Gemini API 키 | (필수) |
+| `REDMINE_URL` | Redmine 서버 URL | `https://redmine.192.168.20.150.nip.io:30443` |
+| `PORT` | 서버 포트 | `50001` |
+| `GUNICORN_WORKERS` | Gunicorn 워커 수 | `4` |
+| `LOG_LEVEL` | 로그 레벨 | `info` |
+
+## 📡 API 엔드포인트
+
+### `GET /`
+웹 UI 페이지
+
+### `POST /chat`
+질의응답 API (Multi-turn 지원)
+
+**Request:**
+```json
+{
+  "question": "최신 TSR 모델의 Dice Score는?"
+}
+```
+
+**Response:**
+```json
+{
+  "answer": "TSR v2.1 모델의 Dice Score는 0.8500입니다. (Issue #123)",
+  "sources": [
+    {
+      "issue_id": 123,
+      "url": "https://redmine.../issues/123"
+    }
+  ],
+  "question": "최신 TSR 모델의 Dice Score는?"
+}
+```
+
+### `POST /reset`
+대화 히스토리 초기화
+
+### `GET /health`
+헬스체크
+
+## 🔄 업데이트 및 재배포
+
+```bash
+# 코드 수정 후
+cd /data/member/jks/redmine_RAG
+
+# 컨테이너 재빌드 (캐시 없이)
+sudo docker compose down
+sudo docker compose up -d --build --no-cache
+
+# 로그 확인
+sudo docker compose logs -f chatbot
+```
+
+## 🎯 주요 기능
+
+- **Multi-turn 대화**: 대화 맥락을 기억하여 후속 질문 가능
+- **초심자 가이드**: 클릭 가능한 프롬프트 예시 제공
+- **실시간 검색**: Vector DB 기반 의미론적 검색
+- **참고 이슈 링크**: 답변 출처를 Redmine 이슈로 연결
+- **마크다운 표 지원**: 복잡한 데이터를 표 형식으로 표시
+
+## 📝 버전 정보
+
+- **현재 버전**: v0.2.2
+- **Python**: 3.11
+- **Flask**: 3.1.0
+- **ChromaDB**: 0.5.23
+- **Gemini**: 2.0 Pro
+- **임베딩 모델**: intfloat/multilingual-e5-large
