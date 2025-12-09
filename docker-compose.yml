@@ -5,7 +5,9 @@
 services:
   # RAG 챗봇 웹 서비스
   chatbot:
-    build: ./chatbot
+    build:
+      context: .
+      dockerfile: ./chatbot/Dockerfile
     container_name: redmine-chatbot
     environment:
       - VECTORDB_PATH=/vectordb/chroma_db_v0.1.2

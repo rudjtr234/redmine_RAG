@@ -168,30 +168,156 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
-        
+
         .timestamp {
             font-size: 11px;
             color: #999;
             margin-top: 5px;
+        }
+
+        /* 가이드 모달 스타일 */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            animation: fadeIn 0.3s;
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 5% auto;
+            padding: 0;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+
+        .modal-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            border-radius: 15px 15px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+        }
+
+        .close {
+            color: white;
+            font-size: 35px;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 20px;
+        }
+
+        .close:hover {
+            opacity: 0.8;
+        }
+
+        .modal-body {
+            padding: 30px;
+            line-height: 1.8;
+        }
+
+        .modal-body h3 {
+            color: #667eea;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        .modal-body h3:first-child {
+            margin-top: 0;
+        }
+
+        .prompt-example {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .prompt-example:hover {
+            background: #e9ecef;
+            transform: translateX(5px);
+        }
+
+        .prompt-example .category {
+            color: #667eea;
+            font-weight: bold;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+
+        .prompt-example .text {
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .prompt-example .desc {
+            color: #666;
+            font-size: 13px;
+        }
+
+        .tip-box {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+        }
+
+        .success-box {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+        }
+
+        .warning-box {
+            background: #f8d7da;
+            border-left: 4px solid #dc3545;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖 Redmine RAG 챗봇</h1>
+            <h1>Redmine RAG 챗봇</h1>
             <p>MTS BIO-DT 실험 데이터 검색 시스템</p>
         </div>
         
         <div class="chat-container" id="chat-box">
             <div class="message bot">
                 <div class="message-content">
-                    안녕하세요! Redmine 실험 데이터 검색 챗봇입니다. <br><br>
-                    <strong>질문 예시:</strong><br>
-                    • 최신 TSR 모델의 Dice Score는?<br>
-                    • BRAF 모델 v0.2.1의 성능은?<br>
-                    • 갑상선 관련 최신 실험 결과는?<br>
-                    • F1-score가 0.8 이상인 모델은?
+                    안녕하세요. <strong>Redmine RAG 챗봇</strong>입니다.<br><br>
+
+                    <strong>주요 기능</strong><br>
+                    • MTS BIO-DT 팀의 과거 실험 데이터 검색<br>
+                    • 특정 모델/버전의 성능 지표 조회<br>
+                    • 유사한 실험 사례 찾기<br>
+                    • 이슈 번호로 상세 정보 확인<br><br>
+
+                    <a href="#" onclick="showGuide(); return false;" style="color: #667eea; text-decoration: underline; font-weight: 500;">사용 가이드 보기</a><br><br>
+
                 </div>
             </div>
         </div>
@@ -206,11 +332,139 @@
             <button id="send-btn" onclick="sendMessage()">전송</button>
         </div>
     </div>
-    
+
+    <!-- 가이드 모달 -->
+    <div id="guideModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Redmine RAG 챗봇 사용 가이드</h2>
+                <span class="close" onclick="closeGuide()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <h3>1. 개요</h3>
+                <p>
+                    Redmine RAG 챗봇은 MTS BIO-DT 팀의 과거 실험 데이터를 자연어로 검색할 수 있는 시스템입니다.<br>
+                    수백 개의 Redmine 이슈를 일일이 찾아볼 필요 없이, 질문만 하면 관련된 실험 결과를 찾아드립니다.
+                </p>
+
+                <h3>2. 질문 예시</h3>
+
+                <div class="success-box">
+                    <strong>질문 예시 (클릭하면 자동 입력됩니다)</strong>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('최신 TSR 모델의 Dice Score는?')">
+                    <div class="category">성능 지표 조회</div>
+                    <div class="text">"최신 TSR 모델의 Dice Score는?"</div>
+                    <div class="desc">특정 모델의 성능 지표를 확인할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('BRAF 모델 v0.2.1의 실험 결과 요약해줘')">
+                    <div class="category">특정 버전 검색</div>
+                    <div class="text">"BRAF 모델 v0.2.1의 실험 결과 요약해줘"</div>
+                    <div class="desc">버전별 실험 결과를 비교할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('Thyroid Mutation 관련 최신 실험 3개 보여줘')">
+                    <div class="category">주제별 검색</div>
+                    <div class="text">"Thyroid Mutation 관련 최신 실험 3개 보여줘"</div>
+                    <div class="desc">특정 주제의 최근 실험을 찾을 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('F1-score가 0.8 이상인 모델들은?')">
+                    <div class="category">조건 검색</div>
+                    <div class="text">"F1-score가 0.8 이상인 모델들은?"</div>
+                    <div class="desc">특정 조건을 만족하는 결과를 찾을 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('TMR 모델의 최근 개선 사항은?')">
+                    <div class="category">개선 추적</div>
+                    <div class="text">"TMR 모델의 최근 개선 사항은?"</div>
+                    <div class="desc">모델의 발전 과정을 확인할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('PyTorch 1.13 환경에서 실험한 결과 있어?')">
+                    <div class="category">환경별 검색</div>
+                    <div class="text">"PyTorch 1.13 환경에서 실험한 결과 있어?"</div>
+                    <div class="desc">특정 개발 환경의 실험을 찾을 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('GPU 메모리 부족 오류 해결 방법 찾아줘')">
+                    <div class="category">문제 해결</div>
+                    <div class="text">"GPU 메모리 부족 오류 해결 방법 찾아줘"</div>
+                    <div class="desc">과거 문제 해결 사례를 찾을 때</div>
+                </div>
+
+                <h3>3. 제한사항</h3>
+                <div class="warning-box">
+                    <strong>답변하기 어려운 질문</strong><br>
+                    • 미래 계획에 대한 질문 (예: "내일 실험 뭐하지?")<br>
+                    • 실험 데이터와 무관한 질문 (예: "커피 맛집 추천해줘")<br>
+                    • 코드 생성 요청 (예: "코드 작성해줘")<br>
+                    • 너무 짧거나 애매한 질문 (예: "이거", "성능")
+                </div>
+
+                <h3>4. 효과적인 질문 작성 방법</h3>
+                <div class="tip-box">
+                    <strong>구체적으로 질문하세요</strong><br>
+                    부적절: "모델 성능은?" → 적절: "TSR v0.2.0 모델의 Dice Score는?"
+                </div>
+
+                <div class="tip-box">
+                    <strong>원하는 정보를 명확히 하세요</strong><br>
+                    부적절: "갑상선" → 적절: "Thyroid Mutation의 최신 실험 결과는?"
+                </div>
+
+                <div class="tip-box">
+                    <strong>키워드를 포함하세요</strong><br>
+                    모델명, 버전, 성능 지표, 실험 주제 등을 포함하면 더 정확한 답변을 받을 수 있습니다.
+                </div>
+
+                <div class="tip-box">
+                    <strong>후속 질문이 가능합니다</strong><br>
+                    대화 맥락을 기억하므로 "그럼 그 모델의 하이퍼파라미터는?" 같은 후속 질문도 가능합니다.
+                </div>
+
+                <h3>5. 참고 사항</h3>
+                <p>
+                    • 답변 하단에 표시되는 <strong>"참고 이슈"</strong> 링크를 클릭하면 Redmine에서 관련 전체 이슈를 확인 가능합니다.<br>
+                    • 이 챗봇은 실시간 대화가 아닌 과거 데이터 검색 도구입니다.<br>
+                    • 정확한 수치나 상세 내용은 반드시 원본 Redmine 이슈를 확인하시기 바랍니다.
+                </p>
+
+            </div>
+        </div>
+    </div>
+
     <script>
         const chatBox = document.getElementById('chat-box');
         const questionInput = document.getElementById('question-input');
         const sendBtn = document.getElementById('send-btn');
+
+        // 가이드 모달 열기
+        function showGuide() {
+            document.getElementById('guideModal').style.display = 'block';
+        }
+
+        // 가이드 모달 닫기
+        function closeGuide() {
+            document.getElementById('guideModal').style.display = 'none';
+        }
+
+        // 모달 외부 클릭 시 닫기
+        window.onclick = function(event) {
+            const modal = document.getElementById('guideModal');
+            if (event.target === modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        // 프롬프트 예시 사용
+        function usePrompt(promptText) {
+            questionInput.value = promptText;
+            closeGuide();
+            questionInput.focus();
+        }
 
         // 마크다운 표를 HTML로 변환
         function convertMarkdownTable(text) {
@@ -303,7 +557,7 @@
             let html = `<div class="message-content">${formattedContent}`;
 
             if (sources && sources.length > 0) {
-                html += '<div class="sources"><strong>📚 참고 이슈:</strong><br>';
+                html += '<div class="sources"><strong>참고 이슈:</strong><br>';
                 sources.forEach(source => {
                     html += `<a href="${source.url}" target="_blank">Issue #${source.issue_id}</a>`;
                 });
@@ -351,11 +605,11 @@
                     // 답변 표시
                     addMessage('bot', data.answer, data.sources);
                 } else {
-                    addMessage('bot', `❌ 오류: ${data.error}`);
+                    addMessage('bot', `오류: ${data.error}`);
                 }
-                
+
             } catch (error) {
-                addMessage('bot', `❌ 네트워크 오류: ${error.message}`);
+                addMessage('bot', `네트워크 오류: ${error.message}`);
             } finally {
                 // 버튼 활성화
                 sendBtn.disabled = false;

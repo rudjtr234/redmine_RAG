@@ -34,7 +34,7 @@ COPY --from=builder /root/.local /home/appuser/.local
 ENV PATH=/home/appuser/.local/bin:$PATH
 
 # 애플리케이션 코드 복사
-COPY --chown=appuser:appuser . .
+COPY --chown=appuser:appuser ./chatbot .
 
 # 로그 디렉토리 생성 및 권한 설정
 RUN mkdir -p /app/logs && chown -R appuser:appuser /app/logs
@@ -51,4 +51,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:50001/health || exit 1
 
 # Gunicorn으로 실행
-CMD ["gunicorn", "--config", "gunicorn_config.py", "app:app"]
+CMD ["gunicorn", "--config", "src/config/gunicorn_config.py", "src.app:app"]
