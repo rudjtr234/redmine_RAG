@@ -1,94 +1,95 @@
+"""Redmine RAG 챗봇 웹 서비스"""
+
+
 """
-Redmine RAG 챗봇 웹 서비스
-- Vector DB 읽기
-- Gemini API 연동
-- 웹 인터페이스 제공
-- Multi-turn 대화 지원
+- vector db  읽기
+- gemini api 연동
+- 웹 인터페이스 연동
+- multi-turn 대화 지원
+- 세션 별 로그인 추가
+
 """
+
 from flask import Flask, render_template, request, jsonify, session
 import os
 import sys
 import logging
 from datetime import timedelta
 
-# 상위 디렉토리를 Python 경로에 추가
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from rag_engine import RedmineRAG
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# templates 디렉토리 경로 설정
 template_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'templates')
 app = Flask(__name__, template_folder=template_dir)
-
-# 세션 설정
 app.secret_key = os.environ.get("SECRET_KEY", "redmine-rag-secret-key-change-in-production")
-app.config['SESSION_TYPE'] = 'filesystem'
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)  # 24시간 유지
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)
 
-# 환경변수
-VECTORDB_PATH = os.environ.get("VECTORDB_PATH", "/vectordb/chroma_db_v0.1.2")
-COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "redmine_issues_raw_v2")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-REDMINE_URL = os.environ.get("REDMINE_URL", "https://redmine.192.168.20.150.nip.io:30443")
-
-# RAG 엔진 초기화
-logger.info("="*80)
 logger.info("🚀 Redmine RAG 챗봇 초기화 중...")
-logger.info("="*80)
-
 rag_engine = RedmineRAG(
-    vectordb_path=VECTORDB_PATH,
-    collection_name=COLLECTION_NAME,
-    gemini_api_key=GEMINI_API_KEY,
-    redmine_url=REDMINE_URL
+    vectordb_path=os.environ.get("VECTORDB_PATH", "/vectordb/chroma_db_v0.1.2"),
+    collection_name=os.environ.get("COLLECTION_NAME", "redmine_issues_raw_v2"),
+    gemini_api_key=os.environ.get("GEMINI_API_KEY"),
+    embedding_model=os.environ.get("EMBEDDING_MODEL", "gemini"),
+    redmine_url=os.environ.get("REDMINE_URL", "https://redmine.192.168.20.150.nip.io:30443"),
+    use_case=os.environ.get("USE_CASE", "redmine")
 )
-
 logger.info("✅ RAG 엔진 준비 완료!")
 
 @app.route('/')
 def index():
-    """메인 페이지"""
     return render_template('chat.html')
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    """질의응답 API (Multi-turn 지원)"""
     try:
         data = request.json
         question = data.get('question', '')
-        top_k = data.get('top_k', None)
+        user_name = data.get('user_name', '')
 
         if not question:
             return jsonify({"error": "질문이 없습니다"}), 400
+        if not user_name:
+            return jsonify({"error": "사용자 이름이 필요합니다"}), 400
 
-        # 세션에서 대화 히스토리 가져오기 (최대 10턴)
-        if 'chat_history' not in session:
-            session['chat_history'] = []
+        session_id = f"mts_{user_name}"
 
-        chat_history = session['chat_history']
+        if session.get('user_name') != user_name:
+            session.update({
+                'session_id': session_id,
+                'user_name': user_name,
+                'chat_history': [],
+                'turn_index': 0
+            })
+            logger.info(f"🆕 새 세션: {session_id} (사용자: {user_name})")
+
+        chat_history = session.get('chat_history', [])
+        turn_index = session.get('turn_index', 0)
 
         logger.info(f"📝 질문: {question} (히스토리: {len(chat_history)}턴)")
 
-        # RAG 실행 (히스토리 포함 - 최근 5턴만 프롬프트에 사용)
-        result = rag_engine.query(question, top_k=top_k, chat_history=chat_history)
+        result = rag_engine.query(
+            question,
+            top_k=data.get('top_k'),
+            chat_history=chat_history,
+            session_id=session_id
+        )
 
-        # 대화 히스토리 업데이트 (최대 10턴만 유지)
-        chat_history.append({
-            "question": question,
-            "answer": result['answer']
-        })
+        rag_engine.save_conversation(
+            session_id=session_id,
+            turn_index=turn_index,
+            question=question,
+            answer=result['answer']
+        )
 
-        if len(chat_history) > 10:
-            chat_history = chat_history[-10:]  # 최근 10턴만 유지
-
-        session['chat_history'] = chat_history
+        chat_history.append({"question": question, "answer": result['answer']})
+        session['chat_history'] = chat_history[-10:]
+        session['turn_index'] = turn_index + 1
         session.modified = True
 
-        logger.info(f"✅ 답변 생성 완료 (히스토리: {len(chat_history)}턴 저장)")
-
+        logger.info(f"✅ 답변 완료 (메모리: {len(chat_history)}턴)")
         return jsonify(result)
 
     except Exception as e:
@@ -97,27 +98,17 @@ def chat():
 
 @app.route('/reset', methods=['POST'])
 def reset():
-    """대화 히스토리 초기화"""
     session.pop('chat_history', None)
     logger.info("🔄 대화 히스토리 초기화")
     return jsonify({"message": "대화 히스토리가 초기화되었습니다"})
 
 @app.route('/health')
 def health():
-    """헬스체크"""
     return jsonify({
         "status": "healthy",
         "vectordb_count": rag_engine.get_document_count()
     })
 
 if __name__ == '__main__':
-    logger.info("="*80)
-    logger.info("🌐 웹 서버 시작")
-    logger.info("📍 http://0.0.0.0:5000")
-    logger.info("="*80)
-    
-    app.run(
-        host='0.0.0.0',
-        port=5000,
-        debug=False
-    )
+    logger.info("🌐 웹 서버 시작: http://0.0.0.0:5000")
+    app.run(host='0.0.0.0', port=5000, debug=False)

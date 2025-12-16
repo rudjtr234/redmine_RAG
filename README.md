@@ -63,9 +63,9 @@ gunicorn --config src/config/gunicorn_config.py src.app:app
 | `VECTORDB_PATH` | ChromaDB 경로 | `/vectordb/chroma_db_v0.1.2` |
 | `COLLECTION_NAME` | 컬렉션 이름 | `redmine_issues_raw_v2` |
 | `GEMINI_API_KEY` | Google Gemini API 키 | (필수) |
-| `REDMINE_URL` | Redmine 서버 URL | `https://redmine.192.168.20.150.nip.io:30443` |
+| `REDMINE_URL` | Redmine 서버 URL | (사내 URL) |
 | `PORT` | 서버 포트 | `50001` |
-| `GUNICORN_WORKERS` | Gunicorn 워커 수 | `4` |
+| `GUNICORN_WORKERS` | Gunicorn 워커 수 | `6` |
 | `LOG_LEVEL` | 로그 레벨 | `info` |
 
 ## 📡 API 엔드포인트
