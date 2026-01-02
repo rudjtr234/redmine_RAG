@@ -10,18 +10,16 @@ services:
       dockerfile: ./chatbot/Dockerfile
     container_name: redmine-chatbot
     environment:
-      - VECTORDB_PATH=/vectordb/chroma_db_v0.2.0
+      - VECTORDB_PATH= Company_db
       - COLLECTION_NAME=redmine_issues_raw_v4
       - EMBEDDING_MODEL=gemini
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - REDMINE_URL=https://redmine.192.168.20.150.nip.io:30443
+      - REDMINE_URL= COMPANY_URL
       - PORT=50001
       - GUNICORN_WORKERS=6
       - LOG_LEVEL=info
     volumes:
-      # Vector DB 마운트 (143 서버의 vectordb 사용)
-      # 143 서버에서 실행 시: ./vectordb
-      # 145 서버에서 실행 시: /data/143/member/jks/redmine_RAG/vectordb
+
       - ${VECTORDB_HOST_PATH:-./vectordb}:/vectordb
       # 로그 저장 (선택사항)
       - ./chatbot/logs:/app/logs
@@ -35,32 +33,3 @@ services:
       retries: 3
       start_period: 60s
 
-  # # RAG 챗봇 웹 서비스 (테스트)
-  # chatbot-test:
-  #   build:
-  #     context: .
-  #     dockerfile: ./chatbot/Dockerfile
-  #   container_name: redmine-chatbot-test
-  #   environment:
-  #     - VECTORDB_PATH=/vectordb/chroma_test_db
-  #     - COLLECTION_NAME=test_documents
-  #     - EMBEDDING_MODEL=gemini
-  #     - USE_CASE=document
-  #     - GEMINI_API_KEY=${GEMINI_API_KEY}
-  #     - PORT=50002
-  #     - GUNICORN_WORKERS=2
-  #     - LOG_LEVEL=debug
-  #   volumes:
-  #     # 테스트 DB 마운트
-  #     - ./vectordb/research_data/src/tests:/vectordb
-  #     # 로그 저장 (선택사항)
-  #     - ./chatbot/logs-test:/app/logs
-  #   ports:
-  #     - "50002:50002"
-  #   restart: unless-stopped
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:50002/health"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
-  #     start_period: 60s
