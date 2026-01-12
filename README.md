@@ -102,37 +102,37 @@ An intelligent RAG (Retrieval-Augmented Generation) chatbot system that integrat
 ### Installation
 
 1. **Clone the repository**
-\`\`\`bash
-git clone <repository-url>
-cd rag-chatbot
-\`\`\`
+```bash
+git clone https://github.com/yourusername/multi-source-rag-chatbot.git
+cd multi-source-rag-chatbot
+```
 
 2. **Set up environment variables**
-\`\`\`bash
+```bash
 cp .env.example .env
-# Edit .env and add your configurations
-\`\`\`
+# Edit .env and add your GEMINI_API_KEY
+```
 
 3. **Prepare your vector database**
-\`\`\`bash
+```bash
 # Place your ChromaDB data in ./vectordb/
-mkdir -p vectordb/chroma_db_v0.2.0
+mkdir -p vectordb/chroma_db
 # Copy your ChromaDB files here
-\`\`\`
+```
 
 4. **Run with Docker Compose**
-\`\`\`bash
+```bash
 docker-compose up -d
-\`\`\`
+```
 
 5. **Access the chatbot**
-\`\`\`
-http://localhost:<PORT>
-\`\`\`
+```
+http://localhost:8080
+```
 
 ### Local Development
 
-\`\`\`bash
+```bash
 cd chatbot
 
 # Install dependencies
@@ -140,55 +140,56 @@ pip install -r requirement.txt
 
 # Set environment variables
 export GEMINI_API_KEY=your_api_key_here
-export VECTORDB_PATH=/path/to/vectordb
+export VECTORDB_PATH=/path/to/vectordb/chroma_db
 export COLLECTION_NAME=your_collection_name
+export PORT=8080
 
 # Run the application
 python src/app.py
 
 # Or with Gunicorn
 gunicorn --config src/config/gunicorn_config.py src.app:app
-\`\`\`
+```
 
 ## 📡 API Endpoints
 
-### \`POST /chat\`
+### `POST /chat`
 Main chatbot endpoint with automatic routing
 
 **Request:**
-\`\`\`json
+```json
 {
   "question": "What is the latest model performance?",
   "user_name": "user123",
   "top_k": 5
 }
-\`\`\`
+```
 
 **Response:**
-\`\`\`json
+```json
 {
   "answer": "The latest model achieved 95% accuracy...",
   "sources": [
     {
-      "issue_id": "123",
-      "subject": "Model Performance Update",
-      "url": "https://your-server/issues/123"
+      "id": "123",
+      "title": "Model Performance Update",
+      "content": "..."
     }
   ],
   "question": "What is the latest model performance?"
 }
-\`\`\`
+```
 
-### \`GET /health\`
+### `GET /health`
 Health check endpoint
 
-### \`POST /reset\`
+### `POST /reset`
 Reset conversation history
 
-### \`GET /users\`
+### `GET /users`
 List all users with conversation history
 
-### \`DELETE /users/<user_name>\`
+### `DELETE /users/<user_name>`
 Delete user and their conversation history
 
 ## 🔧 Configuration
@@ -197,15 +198,15 @@ Delete user and their conversation history
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| \`GEMINI_API_KEY\` | Google Gemini API key | (required) |
-| \`VECTORDB_PATH\` | Path to ChromaDB database | \`/vectordb/chroma_db_v0.2.0\` |
-| \`COLLECTION_NAME\` | ChromaDB collection name | \`your_collection_name\` |
-| \`EMBEDDING_MODEL\` | Embedding model type | \`gemini\` |
-| \`PORT\` | Server port | \`<PORT>\` |
-| \`GUNICORN_WORKERS\` | Number of worker processes | \`6\` |
-| \`LOG_LEVEL\` | Logging level | \`info\` |
+| `GEMINI_API_KEY` | Google Gemini API key | (required) |
+| `VECTORDB_PATH` | Path to primary ChromaDB database | `/vectordb/chroma_db` |
+| `COLLECTION_NAME` | Primary ChromaDB collection name | `your_collection_name` |
+| `EMBEDDING_MODEL` | Embedding model type | `gemini` |
+| `PORT` | Server port | `8080` |
+| `GUNICORN_WORKERS` | Number of worker processes | `4` |
+| `LOG_LEVEL` | Logging level | `info` |
 
-For multiple data sources, add additional configuration with prefix (e.g., \`CRF_VECTORDB_PATH\`).
+For multiple data sources, add additional configuration with a prefix (e.g., `DB2_VECTORDB_PATH`, `DB2_COLLECTION_NAME`).
 
 ## 🎯 Use Cases
 
@@ -224,10 +225,10 @@ Intelligent assistant that remembers context and handles follow-up questions.
 ## 🔒 Security
 
 - Store API keys in environment variables
-- Use \`.env\` files for local development
-- Implement authentication for production
-- Use secret management systems (Kubernetes Secrets, AWS Secrets Manager)
-- Regular security updates
+- Use `.env` files for local development (never commit to git)
+- Implement authentication for production deployments
+- Use secret management systems (Kubernetes Secrets, AWS Secrets Manager, etc.)
+- Regular security updates and dependency scanning
 
 ## 📊 Performance
 
@@ -239,13 +240,20 @@ Intelligent assistant that remembers context and handles follow-up questions.
 
 ### Docker Deployment
 
-\`\`\`bash
+```bash
 # Build image
 docker build -t rag-chatbot:latest ./chatbot
 
 # Run container
-docker run -d -p <PORT>:<PORT> -v ./vectordb:/vectordb -e GEMINI_API_KEY=your_key --name rag-chatbot rag-chatbot:latest
-\`\`\`
+docker run -d \
+  -p 8080:8080 \
+  -v ./vectordb:/vectordb \
+  -e GEMINI_API_KEY=your_api_key \
+  -e VECTORDB_PATH=/vectordb/chroma_db \
+  -e COLLECTION_NAME=your_collection_name \
+  --name rag-chatbot \
+  rag-chatbot:latest
+```
 
 ### Kubernetes
 
