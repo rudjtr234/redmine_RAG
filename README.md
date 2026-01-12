@@ -103,7 +103,7 @@ An intelligent RAG (Retrieval-Augmented Generation) chatbot system that integrat
 
 1. **Clone the repository**
 \`\`\`bash
-git clone https://github.com/yourusername/rag-chatbot.git
+git clone <repository-url>
 cd rag-chatbot
 \`\`\`
 
@@ -127,7 +127,7 @@ docker-compose up -d
 
 5. **Access the chatbot**
 \`\`\`
-http://localhost:50001
+http://localhost:<PORT>
 \`\`\`
 
 ### Local Development
@@ -199,9 +199,9 @@ Delete user and their conversation history
 |----------|-------------|---------|
 | \`GEMINI_API_KEY\` | Google Gemini API key | (required) |
 | \`VECTORDB_PATH\` | Path to ChromaDB database | \`/vectordb/chroma_db_v0.2.0\` |
-| \`COLLECTION_NAME\` | ChromaDB collection name | \`redmine_issues_raw_v4\` |
+| \`COLLECTION_NAME\` | ChromaDB collection name | \`your_collection_name\` |
 | \`EMBEDDING_MODEL\` | Embedding model type | \`gemini\` |
-| \`PORT\` | Server port | \`50001\` |
+| \`PORT\` | Server port | \`<PORT>\` |
 | \`GUNICORN_WORKERS\` | Number of worker processes | \`6\` |
 | \`LOG_LEVEL\` | Logging level | \`info\` |
 
@@ -244,7 +244,7 @@ Intelligent assistant that remembers context and handles follow-up questions.
 docker build -t rag-chatbot:latest ./chatbot
 
 # Run container
-docker run -d -p 50001:50001 -v ./vectordb:/vectordb -e GEMINI_API_KEY=your_key --name rag-chatbot rag-chatbot:latest
+docker run -d -p <PORT>:<PORT> -v ./vectordb:/vectordb -e GEMINI_API_KEY=your_key --name rag-chatbot rag-chatbot:latest
 \`\`\`
 
 ### Kubernetes
@@ -263,6 +263,6 @@ Kubernetes manifests included for production deployment.
 
 MIT License
 
-## 👨‍💻 Author
+## 👨‍💻 Contributing
 
-GitHub: [@yourusername](https://github.com/yourusername)
+Contributions are welcome! Please feel free to submit issues and pull requests.
