@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Logs
+*.log
+
+# 환경 변수
+.env
+.env.local
+
+# 테스트
+tests/
+*.pytest_cache/
+
+# 문서
+*.md
+docs/
+
+# 임시 파일
+tmp/
+temp/
+*.tmp

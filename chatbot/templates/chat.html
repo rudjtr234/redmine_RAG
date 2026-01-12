@@ -1,0 +1,1316 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MTS BIO-DT 종합 챗봇 (Redmine + CRF)</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .container {
+            width: 90%;
+            max-width: 1000px;
+            height: 90vh;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+        
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        
+        .message {
+            margin-bottom: 20px;
+            display: flex;
+            animation: fadeIn 0.3s;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .message.user {
+            justify-content: flex-end;
+        }
+        
+        .message-content {
+            max-width: 90%;
+            min-width: 200px;
+            padding: 15px 20px;
+            border-radius: 15px;
+            word-wrap: break-word;
+            width: fit-content;
+        }
+
+        /* 표가 있을 때 말풍선 확장 */
+        .message-content:has(table) {
+            max-width: 95%;
+        }
+
+        .ellipsis-dots {
+            display: flex;
+            gap: 6px;
+            font-size: 32px;
+            font-weight: 700;
+            color: #667eea;
+        }
+
+        .ellipsis-dots .dot {
+            animation: dotPulse 1.2s infinite ease-in-out;
+            opacity: 0.2;
+        }
+
+        .ellipsis-dots .dot:nth-child(2) { animation-delay: 0.15s; }
+        .ellipsis-dots .dot:nth-child(3) { animation-delay: 0.3s; }
+
+        @keyframes dotPulse {
+            0%, 60%, 100% { opacity: 0.2; transform: translateY(0); }
+            30% { opacity: 1; transform: translateY(-2px); }
+        }
+        
+        .message.user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .message.bot .message-content {
+            background: white;
+            color: #333;
+            border: 1px solid #e0e0e0;
+        }
+
+        /* 로딩 버블: 점만 보이도록 배경/테두리 제거 */
+        .message.bot.loading .message-content,
+        .message.loading .message-content {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            padding: 0 !important;
+            min-width: unset;
+            max-width: unset;
+            border-radius: 0;
+        }
+        
+        .sources {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #e0e0e0;
+            font-size: 13px;
+        }
+        
+        .sources a {
+            display: inline-block;
+            margin: 5px 10px 5px 0;
+            padding: 5px 10px;
+            background: #f0f0f0;
+            border-radius: 5px;
+            color: #667eea;
+            text-decoration: none;
+            transition: all 0.2s;
+            cursor: pointer;
+            pointer-events: auto;
+        }
+
+        .sources a:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .sources a:active {
+            transform: scale(0.98);
+        }
+        
+        .input-container {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 10px;
+        }
+        
+        #question-input {
+            flex: 1;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 25px;
+            font-size: 15px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        
+        #question-input:focus {
+            border-color: #667eea;
+        }
+        
+        #send-btn {
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 15px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
+        #send-btn:hover {
+            transform: scale(1.05);
+        }
+        
+        #send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: scale(1);
+        }
+
+        /* 취소 버튼 스타일 */
+        #send-btn.cancel-btn {
+            background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+        }
+
+        #send-btn.cancel-btn:hover {
+            background: linear-gradient(135deg, #c82333 0%, #bd2130 100%);
+        }
+        
+        .timestamp {
+            font-size: 11px;
+            color: #999;
+            margin-top: 5px;
+        }
+
+        /* 테이블 스타일 개선 */
+        .message-content table {
+            min-width: 600px;
+            font-size: 13px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .message-content table th,
+        .message-content table td {
+            white-space: nowrap;
+            min-width: 80px;
+        }
+
+        /* 테이블이 말풍선을 넘칠 경우 스크롤 */
+        .message-content:has(table) {
+            overflow-x: auto;
+        }
+
+        /* 가이드 모달 스타일 */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            animation: fadeIn 0.3s;
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 5% auto;
+            padding: 0;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+
+        .modal-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            border-radius: 15px 15px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+        }
+
+        .close {
+            color: white;
+            font-size: 35px;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 20px;
+        }
+
+        .close:hover {
+            opacity: 0.8;
+        }
+
+        .modal-body {
+            padding: 30px;
+            line-height: 1.8;
+        }
+
+        .modal-body h3 {
+            color: #667eea;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        .modal-body h3:first-child {
+            margin-top: 0;
+        }
+
+        .prompt-example {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .prompt-example:hover {
+            background: #e9ecef;
+            transform: translateX(5px);
+        }
+
+        .prompt-example .category {
+            color: #667eea;
+            font-weight: bold;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+
+        .prompt-example .text {
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .prompt-example .desc {
+            color: #666;
+            font-size: 13px;
+        }
+
+        .tip-box {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+        }
+
+        .success-box {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+        }
+
+        .warning-box {
+            background: #f8d7da;
+            border-left: 4px solid #dc3545;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+        }
+
+        /* 사용자 이름 입력 모달 */
+        .name-modal {
+            display: none;
+            position: fixed;
+            z-index: 2000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.7);
+            animation: fadeIn 0.3s;
+        }
+
+        .name-modal-content {
+            background: white;
+            margin: 15% auto;
+            padding: 40px;
+            border-radius: 20px;
+            width: 90%;
+            max-width: 450px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            text-align: center;
+        }
+
+        .name-modal-content h2 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .name-modal-content p {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .name-input-group {
+            margin-bottom: 25px;
+        }
+
+        .name-input-group input {
+            width: 100%;
+            padding: 15px 20px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 16px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .name-input-group input:focus {
+            border-color: #667eea;
+        }
+
+        .name-submit-btn {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .name-submit-btn:hover {
+            transform: scale(1.02);
+        }
+
+        .name-submit-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .change-user-btn {
+            background: rgba(255,255,255,0.3);
+            border: 1px solid rgba(255,255,255,0.5);
+            color: white;
+            padding: 5px 15px;
+            border-radius: 15px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-left: 10px;
+            transition: background 0.2s;
+        }
+
+        .change-user-btn:hover {
+            background: rgba(255,255,255,0.4);
+        }
+    </style>
+</head>
+<body>
+    <!-- 사용자 이름 입력 모달 -->
+    <div id="nameModal" class="name-modal">
+        <div class="name-modal-content">
+            <h2>👤 환영합니다!</h2>
+            <p>대화를 시작하기 전에 이름을 입력해주세요</p>
+            <div class="name-input-group">
+                <input
+                    type="text"
+                    id="userNameInput"
+                    placeholder="이름을 입력하세요 (예: bio-dt)"
+                    maxlength="20"
+                    autocomplete="off"
+                >
+            </div>
+            <button class="name-submit-btn" onclick="setUserName()">
+                시작하기
+            </button>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="header" id="mainHeader">
+            <h1>MTS BIO-DT 종합 챗봇</h1>
+            <p>Redmine 실험 데이터 + CRF 유방암 데이터 검색 시스템</p>
+        </div>
+        
+        <div class="chat-container" id="chat-box">
+            <div class="message bot">
+                <div class="message-content">
+                    안녕하세요. <strong>MTS BIO-DT 종합 챗봇</strong>입니다.<br><br>
+
+                    <strong>주요 기능</strong><br>
+                    <strong>Redmine</strong>: 과거 실험 데이터 검색, 모델 성능 지표 조회<br>
+                    <strong>CRF</strong>: 유방암 임상 데이터 검색, 환자 정보 조회<br><br>
+
+                    <a href="#" onclick="showGuideRedmine(); return false;" style="color: #667eea; text-decoration: underline; font-weight: 500;">사용 가이드 (Redmine)</a><br>
+                    <a href="#" onclick="showGuideCRF(); return false;" style="color: #e91e63; text-decoration: underline; font-weight: 500;">사용 가이드 (CRF)</a><br>
+                    <a href="#" onclick="showUserList(); return false;" style="color: #28a745; text-decoration: underline; font-weight: 500;">사용자 목록 보기</a><br><br>
+
+                </div>
+            </div>
+        </div>
+        
+        <div class="input-container">
+            <input 
+                type="text" 
+                id="question-input" 
+                placeholder="질문을 입력하세요..."
+                autocomplete="off"
+            >
+            <button id="send-btn" onclick="sendMessage()">전송</button>
+        </div>
+    </div>
+
+    <!-- 사용자 목록 모달 -->
+    <div id="userListModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>사용자 목록</h2>
+                <span class="close" onclick="closeUserList()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="userListContent">
+                    <div style="text-align: center; color: #999; padding: 20px;">
+                        로딩 중...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Redmine 가이드 모달 -->
+    <div id="guideModalRedmine" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Redmine 사용 가이드</h2>
+                <span class="close" onclick="closeGuideRedmine()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <h3>1. 개요</h3>
+                <p>
+                    <strong>Redmine</strong>: 과거 실험 데이터, 모델 성능 지표, 이슈 정보를 검색합니다.
+                </p>
+
+                <h3>2. 질문 예시 - Redmine (실험 데이터)</h3>
+
+                <div class="success-box">
+                    <strong>질문 예시 (클릭하면 자동 입력됩니다)</strong>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('최신 mitof-objectDet-blad 모델의 f1-score는?')">
+                    <div class="category">성능 지표 조회</div>
+                    <div class="text">"최신 mitof-objectDet-blad 모델의 f1-score는?"</div>
+                    <div class="desc">특정 모델의 성능 지표를 확인할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('BRAF Mutation 모델 v0.7.0의 실험 결과 요약해줘')">
+                    <div class="category">특정 버전 검색</div>
+                    <div class="text">"BRAF Mutation 모델 v0.7.0의 실험 결과 요약해줘"</div>
+                    <div class="desc">버전별 실험 결과를 비교할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('Thyroid Mutation 관련 최신 실험 3개 보여줘')">
+                    <div class="category">주제별 검색</div>
+                    <div class="text">"Thyroid Mutation 관련 최신 실험 3개 보여줘"</div>
+                    <div class="desc">특정 주제의 최근 실험을 찾을 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('F1-score가 0.8 이상인 모델들은?')">
+                    <div class="category">조건 검색</div>
+                    <div class="text">"F1-score가 0.8 이상인 모델들은?"</div>
+                    <div class="desc">특정 조건을 만족하는 결과를 찾을 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('HRD 모델의 최근 개선 사항은?')">
+                    <div class="category">개선 추적</div>
+                    <div class="text">"HRD 모델의 최근 개선 사항은?"</div>
+                    <div class="desc">모델의 발전 과정을 확인할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('PyTorch 1.13 환경에서 실험한 결과 있어?')">
+                    <div class="category">환경별 검색</div>
+                    <div class="text">"PyTorch 1.13 환경에서 실험한 결과 있어?"</div>
+                    <div class="desc">특정 개발 환경의 실험을 찾을 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('GPU 메모리 부족 오류 해결 방법 찾아줘')">
+                    <div class="category">문제 해결</div>
+                    <div class="text">"GPU 메모리 부족 오류 해결 방법 찾아줘"</div>
+                    <div class="desc">과거 문제 해결 사례를 찾을 때</div>
+                </div>
+
+                <h3>3. 제한사항</h3>
+                <div class="warning-box">
+                    <strong>답변하기 어려운 질문</strong><br>
+                    • 미래 계획에 대한 질문 (예: "내일 실험 뭐하지?")<br>
+                    • 실험 데이터와 무관한 질문 (예: "커피 맛집 추천해줘")<br>
+                    • 코드 생성 요청 (예: "코드 작성해줘")<br>
+                    • 너무 짧거나 애매한 질문 (예: "이거", "성능")
+                </div>
+
+                <h3>4. 참고 사항</h3>
+                <p>
+                    <strong>Redmine 데이터:</strong><br>
+                    • 답변 하단에 표시되는 <strong>"참고 이슈"</strong> 링크를 클릭하면 Redmine에서 관련 전체 이슈를 확인 가능합니다.<br>
+                    • 정확한 수치나 상세 내용은 반드시 원본 Redmine 이슈를 확인하시기 바랍니다.<br><br>
+
+                    <strong>공통:</strong><br>
+                    • 이 챗봇은 실시간 대화가 아닌 과거 데이터 검색 도구입니다.<br>
+                    • 대화 맥락을 기억하므로 연속된 질문이 가능합니다.
+                </p>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- CRF 가이드 모달 -->
+    <div id="guideModalCRF" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>CRF 사용 가이드</h2>
+                <span class="close" onclick="closeGuideCRF()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <h3>1. 개요</h3>
+                <p>
+                    <strong>CRF</strong>: 유방암 임상 데이터, 환자 정보, 병리 데이터를 검색/통계/차트로 확인합니다.
+                </p>
+
+                <h3 style="color: #e91e63;">2. 질문 예시 - CRF (유방암 임상 데이터)</h3>
+
+                <h4 style="color: #e91e63; margin-top: 10px;">CRF - 일반 질문</h4>
+
+                <div class="prompt-example" onclick="usePrompt('병리번호 BC_05_0029 환자 정보 알려줘')" style="border-left-color: #e91e63;">
+                    <div class="category" style="color: #e91e63;">CRF - 개별 환자</div>
+                    <div class="text">"병리번호 BC_05_0029 환자 정보 알려줘"</div>
+                    <div class="desc">병리번호로 특정 환자를 찾을 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('HER2 음성이면서 Ki67 20% 이상 사례 5개만 보여줘')" style="border-left-color: #e91e63;">
+                    <div class="category" style="color: #e91e63;">CRF - 조건 샘플 조회</div>
+                    <div class="text">"HER2 음성이면서 Ki67 20% 이상 사례 5개만 보여줘"</div>
+                    <div class="desc">조건 필터 후 상위 사례 몇 건을 확인할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('세브란스 Breast 통합 데이터에서 최근 사례 5건 보여줘')" style="border-left-color: #e91e63;">
+                    <div class="category" style="color: #e91e63;">CRF - 병원/시트별 샘플</div>
+                    <div class="text">"세브란스 Breast 통합 데이터에서 최근 사례 5건 보여줘"</div>
+                    <div class="desc">특정 병원/시트에서 최신 사례를 몇 건만 볼 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('수술명에 partial 포함된 기록 3개만 알려줘')" style="border-left-color: #e91e63;">
+                    <div class="category" style="color: #e91e63;">CRF - 필드 값 샘플</div>
+                    <div class="text">"수술명에 partial 포함된 기록 3개만 알려줘"</div>
+                    <div class="desc">특정 필드 값이 포함된 사례를 소수만 조회할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('2020년 이후 수술한 환자 사례 5개만 보여줘')" style="border-left-color: #e91e63;">
+                    <div class="category" style="color: #e91e63;">CRF - 날짜 조건 샘플</div>
+                    <div class="text">"2020년 이후 수술한 환자 사례 5개만 보여줘"</div>
+                    <div class="desc">날짜 기준으로 필터한 사례를 몇 건만 확인할 때</div>
+                </div>
+
+                <h4 style="color: #e91e63; margin-top: 18px;">CRF - 데이터 현황</h4>
+
+                <div class="prompt-example" onclick="usePrompt('각 병원별 데이터 수 알려줘')" style="border-left-color: #e91e63;">
+                    <div class="category" style="color: #e91e63;">CRF - 메타 정보</div>
+                    <div class="text">"각 병원별 데이터 수 알려줘"</div>
+                    <div class="desc">병원별 데이터 건수와 수집 현황을 요약할 때</div>
+                </div>
+
+                <h4 style="color: #e91e63; margin-top: 18px;">CRF - 통계/차트</h4>
+
+                <div class="prompt-example" onclick="usePrompt('HER2 양성 환자 통계/비율 요약해줘')" style="border-left-color: #e91e63;">
+                    <div class="category" style="color: #e91e63;"> CRF - 통계 조회</div>
+                    <div class="text">"HER2 양성 환자 통계/비율 요약해줘"</div>
+                    <div class="desc">특정 바이오마커 양성 환자의 비율/건수 통계를 확인할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('ER/PR 양성 · HER2 음성 환자 통계 알려줘')" style="border-left-color: #e91e63;">
+                    <div class="category" style="color: #e91e63;"> CRF - 통계 조회</div>
+                    <div class="text">"ER/PR 양성 · HER2 음성 환자 통계 알려줘"</div>
+                    <div class="desc">복합 조건 환자의 전체 비율/건수를 요약할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('세브란스 병원 환자 전체 통계 요약해줘')" style="border-left-color: #e91e63;">
+                    <div class="category" style="color: #e91e63;"> CRF - 통계 조회</div>
+                    <div class="text">"세브란스 병원 환자 전체 통계 요약해줘"</div>
+                    <div class="desc">특정 병원의 전체 환자 수/분포를 요약할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('Ki67 20% 이상 환자 통계 알려줘')" style="border-left-color: #e91e63;">
+                    <div class="category" style="color: #e91e63;"> CRF - 통계 조회</div>
+                    <div class="text">"Ki67 20% 이상 환자 통계 알려줘"</div>
+                    <div class="desc">병리 지표 기준으로 전체 비율/건수를 확인할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('폐경 전 호르몬 양성 환자 통계 요약해줘')" style="border-left-color: #e91e63;">
+                    <div class="category" style="color: #e91e63;"> CRF - 통계 조회</div>
+                    <div class="text">"폐경 전 호르몬 양성 환자 통계 요약해줘"</div>
+                    <div class="desc">임상 특성 기준으로 전체 비율/건수를 확인할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('Triple Negative 유방암 환자 통계')" style="border-left-color: #e91e63;">
+                    <div class="category" style="color: #e91e63;"> CRF - 통계 조회</div>
+                    <div class="text">"Triple Negative 유방암 환자 통계"</div>
+                    <div class="desc">특정 유형의 환자 통계를 확인할 때</div>
+                </div>
+
+                <div class="prompt-example" onclick="usePrompt('계명대 병원에서 수집한 데이터 통계 보여줘')" style="border-left-color: #e91e63;">
+                    <div class="category" style="color: #e91e63;"> CRF - 기관별 통계</div>
+                    <div class="text">"계명대 병원에서 수집한 데이터 통계 보여줘"</div>
+                    <div class="desc">특정 의료기관의 전체 데이터를 분석할 때</div>
+                </div>
+
+                <h3>3. 제한사항</h3>
+                <div class="warning-box">
+                    <strong>답변하기 어려운 질문</strong><br>
+                    • 미래 계획에 대한 질문 (예: "내일 실험 뭐하지?")<br>
+                    • 실험 데이터와 무관한 질문 (예: "커피 맛집 추천해줘")<br>
+                    • 코드 생성 요청 (예: "코드 작성해줘")<br>
+                    • 너무 짧거나 애매한 질문 (예: "이거", "성능")
+                </div>
+
+                <h3>4. 참고 사항</h3>
+                <p>
+                    <strong>CRF 데이터:</strong><br>
+                    • 답변 하단에 표시되는 <strong>"참고 데이터"</strong>는 실제 환자 데이터 출처 정보입니다.<br>
+                    • Record ID, 병원명, 병리번호, 시트 정보가 포함되어 있습니다.<br>
+                    • 민감한 개인정보이므로 외부 유출에 주의하시기 바랍니다.<br><br>
+
+                    <strong>공통:</strong><br>
+                    • 이 챗봇은 실시간 대화가 아닌 과거 데이터 검색 도구입니다.<br>
+                    • 대화 맥락을 기억하므로 연속된 질문이 가능합니다.
+                </p>
+
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ============================================
+        // 전역 변수 선언
+        // ============================================
+        const chatBox = document.getElementById('chat-box');
+        const questionInput = document.getElementById('question-input');
+        const sendBtn = document.getElementById('send-btn');
+        const initialChatHTML = chatBox.innerHTML; // 초기 안내/가이드는 리셋 후에도 유지
+        let currentAbortController = null; // 현재 진행 중인 요청을 취소하기 위한 컨트롤러
+        let currentLoadingMessage = null; // 진행 중인 로딩 메시지 버블
+
+        // ============================================
+        // 유틸리티 함수
+        // ============================================
+
+        /**
+         * 입력창과 전송 버튼 활성화/비활성화
+         * @param {boolean} disabled - true: 비활성화, false: 활성화
+         */
+        function toggleChatInputs(disabled) {
+            questionInput.disabled = disabled;
+            sendBtn.disabled = disabled;
+        }
+
+        /**
+         * 화면의 대화 내용 초기화 (초기 안내 메시지만 남김)
+         */
+        function resetConversationUI() {
+            chatBox.innerHTML = initialChatHTML;
+        }
+
+        /**
+         * 서버 세션 초기화 (대화 히스토리 삭제)
+         */
+        async function resetServerSession() {
+            try {
+                await fetch('/reset', { method: 'POST' });
+            } catch (e) {
+                console.warn('세션 초기화 실패(무시):', e);
+            }
+        }
+
+        // ============================================
+        // 사용자 이름 관리 함수
+        // ============================================
+
+        /**
+         * 사용자 이름 설정 및 저장
+         */
+        function setUserName() {
+            const nameInput = document.getElementById('userNameInput');
+            const userName = nameInput.value.trim();
+
+            if (!userName) {
+                alert('이름을 입력해주세요');
+                return;
+            }
+
+            // 특수문자 제거 (알파벳, 한글, 숫자만 허용)
+            const cleanName = userName.replace(/[^a-zA-Z0-9가-힣]/g, '');
+            if (cleanName !== userName) {
+                alert('특수문자는 사용할 수 없습니다');
+                return;
+            }
+
+            const previousName = localStorage.getItem('userName');
+
+            // localStorage에 저장
+            localStorage.setItem('userName', cleanName);
+
+            // 모달 닫기
+            document.getElementById('nameModal').style.display = 'none';
+
+            // 헤더에 사용자 이름 표시
+            updateUserDisplay(cleanName);
+
+            // 사용자 변경 시 대화 UI/세션 리셋
+            if (!previousName || previousName !== cleanName) {
+                resetConversationUI();
+                resetServerSession();
+            }
+
+            // 입력창 활성화
+            toggleChatInputs(false);
+
+            // 입력창 포커스
+            questionInput.focus();
+        }
+        // [사용자 이름 설정 함수 끝]
+
+        /**
+         * 헤더에 사용자 이름 표시
+         * @param {string} userName - 표시할 사용자 이름
+         */
+        function updateUserDisplay(userName) {
+            const header = document.getElementById('mainHeader');
+
+            // 기존 사용자 표시 제거
+            const existingUserDiv = document.getElementById('currentUserDisplay');
+            if (existingUserDiv) {
+                existingUserDiv.remove();
+            }
+
+            // 새 사용자 표시 추가
+            const userDiv = document.createElement('div');
+            userDiv.id = 'currentUserDisplay';
+            userDiv.style.cssText = 'margin-top: 10px; font-size: 13px; color: white;';
+            userDiv.innerHTML = `
+                <span>👤 ${userName}</span>
+                <button onclick="changeUserName()" class="change-user-btn">변경</button>
+            `;
+
+            header.appendChild(userDiv);
+        }
+        // [사용자 이름 표시 함수 끝]
+
+        /**
+         * 사용자 이름 변경 (헤더의 "변경" 버튼 클릭 시)
+         */
+        function changeUserName() {
+            localStorage.removeItem('userName');
+            document.getElementById('nameModal').style.display = 'flex';
+            document.getElementById('userNameInput').value = '';
+            document.getElementById('userNameInput').focus();
+
+            // 대화 UI/세션 리셋
+            resetConversationUI();
+            resetServerSession();
+
+            // 헤더에서 사용자 표시 제거
+            const existingUserDiv = document.getElementById('currentUserDisplay');
+            if (existingUserDiv) {
+                existingUserDiv.remove();
+            }
+
+            // 입력창 비활성화
+            toggleChatInputs(true);
+        }
+        // [사용자 이름 관리 함수 끝]
+
+        // ============================================
+        // 모달 관리 함수
+        // ============================================
+
+        /** 사용 가이드 모달 열기/닫기 */
+        function showGuideRedmine() {
+            document.getElementById('guideModalRedmine').style.display = 'block';
+        }
+        function closeGuideRedmine() {
+            document.getElementById('guideModalRedmine').style.display = 'none';
+        }
+        function showGuideCRF() {
+            document.getElementById('guideModalCRF').style.display = 'block';
+        }
+        function closeGuideCRF() {
+            document.getElementById('guideModalCRF').style.display = 'none';
+        }
+
+        /**
+         * 사용자 목록 모달 열기 및 데이터 로드
+         */
+        async function showUserList() {
+            const modal = document.getElementById('userListModal');
+            const contentDiv = document.getElementById('userListContent');
+
+            modal.style.display = 'block';
+            contentDiv.innerHTML = '<div style="text-align: center; color: #999; padding: 20px;">로딩 중...</div>';
+
+            try {
+                const response = await fetch('/users');
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || '사용자 목록을 가져올 수 없습니다');
+                }
+
+                const users = data.users || [];
+
+                if (users.length === 0) {
+                    contentDiv.innerHTML = '<div style="text-align: center; color: #999; padding: 20px;">등록된 사용자가 없습니다.</div>';
+                    return;
+                }
+
+                // 사용자 목록 테이블 생성
+                let html = '<table border="1" style="border-collapse: collapse; width: 100%; margin: 10px 0;">';
+                html += '<tr>';
+                html += '<th style="background: #f0f0f0; padding: 10px; text-align: left;">사용자명</th>';
+                html += '<th style="background: #f0f0f0; padding: 10px; text-align: center;">대화 수</th>';
+                html += '<th style="background: #f0f0f0; padding: 10px; text-align: center;">최초 접속</th>';
+                html += '<th style="background: #f0f0f0; padding: 10px; text-align: center;">최근 접속</th>';
+                html += '<th style="background: #f0f0f0; padding: 10px; text-align: center;">삭제</th>';
+                html += '</tr>';
+
+                users.forEach(user => {
+                    const firstSeen = user.first_seen ? new Date(user.first_seen).toLocaleString('ko-KR') : '-';
+                    const lastSeen = user.last_seen ? new Date(user.last_seen).toLocaleString('ko-KR') : '-';
+
+                    html += '<tr>';
+                    html += `<td style="padding: 10px;"><strong>${user.user_name}</strong></td>`;
+                    html += `<td style="padding: 10px; text-align: center;">${user.total_conversations}</td>`;
+                    html += `<td style="padding: 10px; text-align: center;">${firstSeen}</td>`;
+                    html += `<td style="padding: 10px; text-align: center;">${lastSeen}</td>`;
+                    html += `<td style="padding: 10px; text-align: center;">
+                        <button onclick="deleteUser('${user.user_name}')" style="
+                            background: #dc3545;
+                            color: white;
+                            border: none;
+                            padding: 5px 15px;
+                            border-radius: 5px;
+                            cursor: pointer;
+                            font-size: 12px;
+                        ">삭제</button>
+                    </td>`;
+                    html += '</tr>';
+                });
+
+                html += '</table>';
+                html += `<div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px; color: #666; font-size: 14px;">`;
+                html += `총 <strong>${users.length}</strong>명의 사용자가 등록되어 있습니다.`;
+                html += `</div>`;
+
+                contentDiv.innerHTML = html;
+
+            } catch (error) {
+                contentDiv.innerHTML = `<div style="text-align: center; color: #dc3545; padding: 20px;">오류: ${error.message}</div>`;
+            }
+        }
+
+        /**
+         * 사용자 목록 모달 닫기
+         */
+        function closeUserList() {
+            document.getElementById('userListModal').style.display = 'none';
+        }
+
+        /**
+         * 사용자 삭제
+         * @param {string} userName - 삭제할 사용자 이름
+         */
+        async function deleteUser(userName) {
+            if (!confirm(`정말로 '${userName}' 사용자를 삭제하시겠습니까?\n해당 사용자의 모든 대화 기록이 삭제됩니다.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/users/${userName}`, {
+                    method: 'DELETE'
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    alert(`'${userName}' 사용자가 삭제되었습니다.`);
+                    // 목록 새로고침
+                    showUserList();
+                } else {
+                    throw new Error(data.error || '삭제 실패');
+                }
+            } catch (error) {
+                alert(`삭제 중 오류 발생: ${error.message}`);
+            }
+        }
+
+        /**
+         * 모달 외부 클릭 시 닫기 (모든 모달 공통)
+         */
+        window.onclick = (e) => {
+            if (e.target.id === 'guideModalRedmine') closeGuideRedmine();
+            if (e.target.id === 'guideModalCRF') closeGuideCRF();
+            if (e.target.id === 'userListModal') closeUserList();
+        };
+
+        /**
+         * 가이드의 프롬프트 예시를 입력창에 채우기
+         * @param {string} promptText - 입력할 예시 텍스트
+         */
+        function usePrompt(promptText) {
+            questionInput.value = promptText;
+            closeGuideRedmine();
+            closeGuideCRF();
+            questionInput.focus();
+        }
+        // [모달 관리 함수 끝]
+
+        // ============================================
+        // 메시지 처리 함수
+        // ============================================
+
+        /**
+         * 로딩 메시지 추가
+         * @returns {HTMLElement} 추가된 로딩 메시지 요소
+         */
+        function addLoadingPlaceholder() {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message bot loading';
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.style.justifyContent = 'center';
+
+            const dots = document.createElement('div');
+            dots.className = 'ellipsis-dots';
+            for (let i = 0; i < 3; i++) {
+                const dot = document.createElement('span');
+                dot.className = 'dot';
+                dot.textContent = '.';
+                dots.appendChild(dot);
+            }
+
+            contentDiv.appendChild(dots);
+            messageDiv.appendChild(contentDiv);
+            chatBox.appendChild(messageDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+
+            return messageDiv;
+        }
+
+        /**
+         * 로딩 메시지 제거
+         * @param {HTMLElement} el - 제거할 로딩 메시지 요소
+         */
+        function removeLoadingPlaceholder(el) {
+            if (el && el.parentNode) {
+                el.remove();
+            }
+        }
+
+        /**
+         * 마크다운 표를 HTML 테이블로 변환
+         * @param {string} text - 마크다운 텍스트
+         * @returns {string} HTML로 변환된 텍스트
+         */
+        function convertMarkdownTable(text) {
+            const lines = text.split('\n');
+            let html = text;
+            let inTable = false;
+            let tableLines = [];
+
+            const processTable = (lines) => {
+                let tableHtml = '<table border="1" style="border-collapse: collapse; margin: 10px 0; width: 100%;">';
+                lines.forEach((line, idx) => {
+                    if (line.includes('---')) return;
+                    const cells = line.split('|').filter(cell => cell.trim() !== '');
+                    const tag = idx === 0 ? 'th' : 'td';
+                    const style = idx === 0 ?
+                        'style="background: #f0f0f0; padding: 8px; text-align: left;"' :
+                        'style="padding: 8px;"';
+                    tableHtml += '<tr>';
+                    cells.forEach(cell => tableHtml += `<${tag} ${style}>${cell.trim()}</${tag}>`);
+                    tableHtml += '</tr>';
+                });
+                return tableHtml + '</table>';
+            };
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (line.startsWith('|') && line.endsWith('|')) {
+                    if (!inTable) {
+                        inTable = true;
+                        tableLines = [];
+                    }
+                    tableLines.push(line);
+                } else if (inTable && tableLines.length > 0) {
+                    html = html.replace(tableLines.join('\n'), processTable(tableLines));
+                    inTable = false;
+                    tableLines = [];
+                }
+            }
+
+            if (inTable && tableLines.length > 0) {
+                html = html.replace(tableLines.join('\n'), processTable(tableLines));
+            }
+
+            return html.replace(/\n/g, '<br>');
+        }
+
+        /**
+         * 채팅창에 메시지 추가
+         * @param {string} role - 'user' 또는 'bot'
+         * @param {string} content - 메시지 내용
+         * @param {Array} sources - 참고 이슈 목록 (optional)
+         * @param {Array} charts - 차트 이미지 목록 (optional)
+         */
+        function addMessage(role, content, sources = null, charts = null) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+
+            const formattedContent = convertMarkdownTable(content);
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.innerHTML = formattedContent;
+
+            // 차트 이미지 추가 (sources 앞에 표시)
+            if (charts && charts.length > 0) {
+                const chartsContainer = document.createElement('div');
+                chartsContainer.style.cssText = 'margin: 15px 0;';
+
+                charts.forEach((chart, idx) => {
+                    const img = document.createElement('img');
+                    img.src = `data:${chart.mime_type};base64,${chart.data}`;
+                    img.alt = `Chart ${idx + 1}`;
+                    img.style.cssText = 'max-width: 100%; height: auto; border-radius: 8px; margin: 10px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1);';
+                    chartsContainer.appendChild(img);
+                });
+
+                contentDiv.appendChild(chartsContainer);
+            }
+
+            // Sources 요소 추가 (use_case별로 다르게 표시)
+            if (sources && sources.length > 0) {
+                console.log('참고 sources:', sources);
+
+                const sourcesDiv = document.createElement('div');
+                sourcesDiv.className = 'sources';
+
+                const sourceTitle = document.createElement('strong');
+
+                // Redmine 이슈인지 CRF 데이터인지 구분
+                const isRedmineIssue = sources[0].hasOwnProperty('issue_id');
+                const isCRFData = sources[0].hasOwnProperty('record_id');
+
+                if (isRedmineIssue) {
+                    // Redmine 이슈 표시
+                    sourceTitle.textContent = '참고 이슈:';
+                    sourcesDiv.appendChild(sourceTitle);
+                    sourcesDiv.appendChild(document.createElement('br'));
+
+                    sources.forEach(s => {
+                        const link = document.createElement('a');
+                        link.href = s.url || '#';
+                        link.textContent = `Issue #${s.issue_id}`;
+                        link.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (s.url) {
+                                window.open(s.url, '_blank', 'noopener');
+                            }
+                        });
+                        link.rel = 'noopener noreferrer';
+                        sourcesDiv.appendChild(link);
+                    });
+                } else if (isCRFData) {
+                    // CRF 데이터 표시 (클릭 불가, 정보만 표시)
+                    sourceTitle.textContent = '참고 데이터:';
+                    sourcesDiv.appendChild(sourceTitle);
+                    sourcesDiv.appendChild(document.createElement('br'));
+
+                    sources.forEach(s => {
+                        const dataInfo = document.createElement('div');
+                        dataInfo.style.cssText = 'margin: 5px 0; padding: 8px; background: #f8f9fa; border-radius: 5px; font-size: 12px; color: #555;';
+                        dataInfo.textContent = `📋 ${s.record_id} | 병원: ${s.hospital} | 병리번호: ${s.path_no || 'N/A'} | 시트: ${s.sheet}`;
+                        sourcesDiv.appendChild(dataInfo);
+                    });
+                } else {
+                    // 일반 문서 표시
+                    sourceTitle.textContent = '참고 문서:';
+                    sourcesDiv.appendChild(sourceTitle);
+                    sourcesDiv.appendChild(document.createElement('br'));
+
+                    sources.forEach(s => {
+                        const docInfo = document.createElement('div');
+                        docInfo.style.cssText = 'margin: 5px 0; padding: 8px; background: #f8f9fa; border-radius: 5px; font-size: 12px; color: #555;';
+                        docInfo.textContent = `📄 ${s.filename} (${s.chunk_index + 1}/${s.total_chunks})`;
+                        sourcesDiv.appendChild(docInfo);
+                    });
+                }
+
+                contentDiv.appendChild(sourcesDiv);
+            }
+
+            // Timestamp 추가
+            const timestampDiv = document.createElement('div');
+            timestampDiv.className = 'timestamp';
+            timestampDiv.textContent = new Date().toLocaleTimeString('ko-KR');
+            contentDiv.appendChild(timestampDiv);
+
+            messageDiv.appendChild(contentDiv);
+            chatBox.appendChild(messageDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+        // [메시지 처리 함수 끝]
+
+        // ============================================
+        // 채팅 전송 및 요청 관리
+        // ============================================
+
+        /**
+         * 전송 버튼 상태 변경
+         * @param {boolean} isCancel - true: 취소 버튼, false: 전송 버튼
+         */
+        function setButtonState(isCancel) {
+            sendBtn.disabled = false;
+            sendBtn.innerHTML = isCancel ? '취소' : '전송';
+            sendBtn.className = isCancel ? 'cancel-btn' : '';
+            sendBtn.onclick = isCancel ? cancelRequest : sendMessage;
+        }
+
+        /**
+         * 서버 요청 취소
+         */
+        function cancelRequest() {
+            if (currentAbortController) {
+                currentAbortController.abort();
+                currentAbortController = null;
+                removeLoadingPlaceholder(currentLoadingMessage);
+                currentLoadingMessage = null;
+                setButtonState(false);
+                addMessage('bot', '요청이 취소되었습니다.');
+            }
+        }
+
+        /**
+         * 질문을 서버에 전송하고 응답 받기
+         */
+        async function sendMessage() {
+            const question = questionInput.value.trim();
+            if (!question) return;
+
+            const userName = localStorage.getItem('userName');
+            if (!userName) {
+                alert('먼저 이름을 입력해주세요');
+                document.getElementById('nameModal').style.display = 'flex';
+                return;
+            }
+
+            addMessage('user', question);
+            questionInput.value = '';
+
+            currentAbortController = new AbortController();
+            currentLoadingMessage = addLoadingPlaceholder();
+            setButtonState(true);
+
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question, user_name: userName }),
+                    signal: currentAbortController.signal
+                });
+
+                const data = await response.json();
+                removeLoadingPlaceholder(currentLoadingMessage);
+                currentLoadingMessage = null;
+
+                if (response.ok) {
+                    // 차트 이미지가 있으면 표시
+                    if (data.charts && data.charts.length > 0) {
+                        addMessage('bot', data.answer, data.sources, data.charts);
+                    } else {
+                        addMessage('bot', data.answer, data.sources);
+                    }
+                } else {
+                    addMessage('bot', `오류: ${data.error}`);
+                }
+            } catch (error) {
+                removeLoadingPlaceholder(currentLoadingMessage);
+                currentLoadingMessage = null;
+                if (error.name !== 'AbortError') {
+                    addMessage('bot', `네트워크 오류: ${error.message}`);
+                }
+            } finally {
+                currentAbortController = null;
+                setButtonState(false);
+            }
+        }
+        
+        // Enter 키 이벤트
+        questionInput.addEventListener('keypress', (e) => e.key === 'Enter' && sendMessage());
+        document.getElementById('userNameInput').addEventListener('keypress', (e) => e.key === 'Enter' && setUserName());
+
+        // 페이지 로드 시 사용자 이름 확인
+        window.onload = () => {
+            toggleChatInputs(true);
+            document.getElementById('userNameInput').value = localStorage.getItem('userName') || '';
+            document.getElementById('nameModal').style.display = 'flex';
+            document.getElementById('userNameInput').focus();
+        };
+    </script>
+</body>
+</html>

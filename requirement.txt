@@ -1,0 +1,17 @@
+# Web Framework
+flask==3.0.0
+gunicorn==21.2.0
+
+# NumPy (호환성 문제 해결)
+numpy<2.0
+
+# Vector DB & Embeddings
+chromadb==1.3.5
+sentence-transformers==2.7.0
+
+# LLM API (Code Execution 지원) - 새 SDK
+google-genai>=0.3.0
+
+# Utilities
+requests==2.31.0
+python-dotenv==1.0.0
