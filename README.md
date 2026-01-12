@@ -17,54 +17,76 @@ An intelligent RAG (Retrieval-Augmented Generation) chatbot system that integrat
 - **Vector-based History Search**: Retrieves relevant past conversations to improve answers
 
 ### 📊 Data Source Integration
-- **Project Management Data**: Integrates with issue tracking systems
-- **Research Data**: Supports structured research data with statistical analysis
-- **Extensible Architecture**: Easy to add new data sources
+- **Multiple Database Support**: Connect multiple ChromaDB collections
+- **Domain-Specific Routing**: Automatic selection based on query content
+- **Structured Data Support**: Handle metadata queries and statistical operations
+- **Extensible Architecture**: Easy to add new data sources with minimal code changes
+- **Direct Lookup**: Support for ID-based direct retrieval (e.g., issue numbers, record IDs)
 
 ### 📈 Statistical Analysis & Visualization
 - **Automated Statistics**: Python-based calculation for numerical queries
-- **Chart Generation**: Automatic visualization using Gemini Code Execution
+- **Chart Generation**: Automatic visualization using Gemini Code Execution API
 - **Multi-field Filtering**: Complex query support with multiple conditions
+- **Metadata Queries**: Direct field queries without semantic search
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────┐
-│   User Query    │
-└────────┬────────┘
-         │
-┌────────▼────────────────────────────────┐
-│     Intelligent Router                  │
-│  (Keyword + Vector Similarity)          │
-└────────┬────────────────────────────────┘
-         │
-    ┌────┴────┐
-    │         │
-┌───▼──┐  ┌──▼───┐
-│ DB 1 │  │ DB 2 │  ... (Extensible)
-└───┬──┘  └──┬───┘
-    │         │
-    └────┬────┘
-         │
-┌────────▼─────────┐
-│  Gemini LLM      │
-│  (Answer Gen)    │
-└────────┬─────────┘
-         │
-┌────────▼─────────┐
-│   Response       │
-└──────────────────┘
+                    ┌─────────────────┐
+                    │   User Query    │
+                    └────────┬────────┘
+                             │
+         ┌───────────────────┼───────────────────┐
+         │                   │                   │
+    ┌────▼────┐         ┌───▼────┐        ┌────▼────┐
+    │Metadata │         │General │        │Statistics│
+    │ Query?  │         │ Chat?  │        │ Query?   │
+    └────┬────┘         └───┬────┘        └────┬─────┘
+         │                  │                   │
+         └──────────────────┼───────────────────┘
+                            │
+              ┌─────────────▼──────────────┐
+              │   Intelligent Router       │
+              │ (Keyword + Vector Compare) │
+              └─────────────┬──────────────┘
+                            │
+                ┌───────────┴───────────┐
+                │                       │
+         ┌──────▼──────┐        ┌──────▼──────┐
+         │  Database 1 │        │  Database 2 │
+         │  (Vector)   │        │  (Vector)   │
+         └──────┬──────┘        └──────┬──────┘
+                │                       │
+                └───────────┬───────────┘
+                            │
+              ┌─────────────▼──────────────┐
+              │  Context Construction      │
+              │  + History Integration     │
+              └─────────────┬──────────────┘
+                            │
+              ┌─────────────▼──────────────┐
+              │      Gemini LLM            │
+              │  (Answer Generation)       │
+              └─────────────┬──────────────┘
+                            │
+              ┌─────────────▼──────────────┐
+              │   Response + Sources       │
+              └────────────────────────────┘
 ```
 
 ## 🛠️ Tech Stack
 
 - **Backend**: Flask (Python 3.11)
-- **Vector Database**: ChromaDB
-- **LLM**: Google Gemini 2.5 Pro
-- **Embedding**: Gemini Embedding 001
-- **Server**: Gunicorn
+- **Vector Database**: ChromaDB (with HNSW indexing)
+- **LLM**:
+  - Google Gemini 2.5 Pro (Q&A)
+  - Google Gemini Flash 3 (Code Execution & Charts)
+- **Embedding**:
+  - Gemini Embedding 001 (default)
+  - Sentence Transformers (alternative)
+- **Server**: Gunicorn (multi-worker)
 - **Containerization**: Docker & Docker Compose
-- **Orchestration**: Kubernetes (Deployment ready)
+- **Orchestration**: Kubernetes ready
 
 ## 📁 Project Structure
 
