@@ -2,6 +2,10 @@
 
 A RAG (Retrieval-Augmented Generation) chatbot that searches Redmine issue history and structured clinical/domain data, built with Flask + ChromaDB + Gemini.
 
+## Pipeline Overview
+
+![Redmine RAG Chatbot Pipeline](images/redmine_rag_pipeline.png)
+
 ## Features
 
 - **Dual-source routing**: Automatically routes queries between Redmine issues and secondary structured data (e.g., clinical records) using keyword detection + vector similarity comparison
