@@ -1,4 +1,4 @@
-"""CRF 데이터 통계 계산 모듈"""
+"""CRF 데이터 통계 계산 모듈 - 8개 암종 통합"""
 import logging
 import re
 from collections import Counter
@@ -7,670 +7,1101 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+# 병원 코드 매핑 (암종별)
+# ============================================================
+
+HOSPITAL_MAP_BREAST = {
+    "01": "세브란스", "02": "계명대", "03": "분당차",
+    "04": "강남세브란스", "05": "강남차", "06": "단국대", "07": "이화여대"
+}
+
+HOSPITAL_MAP_STOMACH = {
+    "1": "세브란스", "2": "분당차", "3": "이대", "4": "단국대", "5": "계명대",
+    "01": "신촌세브란스", "02": "계명대", "03": "분당차", "04": "단국대", "07": "이대목동"
+}
+
+HOSPITAL_MAP_DEFAULT = {
+    "01": "병원01", "02": "병원02", "03": "병원03",
+    "04": "병원04", "05": "병원05", "06": "병원06", "07": "병원07"
+}
+
+CATEGORY_LABEL = {
+    "breast": "유방암",
+    "stomach": "위암",
+    "thyroid": "갑상선암",
+    "colorectal": "대장암",
+    "hrd": "난소암(HRD)",
+    "cervix": "자궁경부암",
+    "prostate": "전립선암",
+    "liver": "간암",
+}
+
+
+def _get_hospital_name(hospital_code: str, category: str = "") -> str:
+    if category == "breast":
+        return HOSPITAL_MAP_BREAST.get(str(hospital_code), f"병원 {hospital_code}")
+    elif category == "stomach":
+        return HOSPITAL_MAP_STOMACH.get(str(hospital_code), f"병원 {hospital_code}")
+    else:
+        return HOSPITAL_MAP_DEFAULT.get(str(hospital_code), f"병원 {hospital_code}")
+
+
+def _normalize_colorectal_stage(raw_value: str, stage_type: str):
+    """
+    대장암 T/N stage 값 정규화.
+    - 숫자 코드(예: 3, 2, 0) -> 표준 stage 라벨
+    - 문자열 stage(예: T4, N1, T4a, N2b) -> 표준화
+    - x/미상/pCR/No residual 등 특수값 처리
+    - 코드북/헤더 값(예: "T stage", "Tis: 0")은 제외
+    """
+    if raw_value is None:
+        return None
+
+    st = stage_type.upper()
+    if st not in ("T", "N"):
+        return None
+
+    value = str(raw_value).strip()
+    if not value:
+        return None
+
+    value_l = value.lower()
+
+    # 코드북/헤더 row 방어
+    if value_l in ("t stage", "n stage"):
+        return None
+    if re.match(r'^[tn][^:]*:\s*\d+\s*$', value_l):
+        return None
+
+    # 명시적 stage 표기 우선 처리 (T4, N1, T4a, N2b, Tis, Tx ...)
+    if st == "T":
+        explicit = re.search(r'\bT\s*(IS|X|0|1|2|3|4A|4B|4)\b', value, re.IGNORECASE)
+        if explicit:
+            token = explicit.group(1).upper()
+            if token == "IS":
+                return "Tis"
+            return f"T{token}"
+    else:
+        explicit = re.search(r'\bN\s*(X|0|1A|1B|1C|1|2A|2B|2)\b', value, re.IGNORECASE)
+        if explicit:
+            token = explicit.group(1).upper()
+            return f"N{token}"
+
+    # 숫자 코드 -> stage 라벨 매핑
+    if re.fullmatch(r'[0-5]', value):
+        if st == "T":
+            code_map = {
+                "0": "Tis",
+                "1": "T1",
+                "2": "T2",
+                "3": "T3",
+                "4": "T4a",
+                "5": "T4b",
+            }
+        else:
+            code_map = {
+                "0": "N0",
+                "1": "N1a",
+                "2": "N1b",
+                "3": "N1c",
+                "4": "N2a",
+                "5": "N2b",
+            }
+        return code_map.get(value)
+
+    # 특수/결측값 처리
+    if value_l in ("x", "미상", "unknown", "unk"):
+        return f"{st}x"
+
+    if st == "T" and (
+        "pcr" in value_l
+        or "no residual" in value_l
+        or "ccrt후 no residual cancer" in value_l
+    ):
+        return "T0"
+
+    return None
+
+
+# ============================================================
+# 암종별 통계 파서
+# ============================================================
+
+def _parse_breast(doc: str, meta: dict, accum: dict):
+    """유방암 필드 파싱"""
+    a = accum
+
+    age = re.search(r'나이\s*\(진단시\)\s*:\s*(\d+)', doc)
+    if age:
+        a['ages'].append(int(age.group(1)))
+
+    size = re.search(r'암\s*size\s*\(mm\)_장경\s*:\s*(\d+(?:\.\d+)?)', doc)
+    if size:
+        a['tumor_sizes'].append(float(size.group(1)))
+
+    er = re.search(r'ER\s*\(-/\+\)\s*:\s*([01])', doc)
+    if er:
+        a['er_total'] += 1
+        if er.group(1) == '1':
+            a['er_positive'] += 1
+
+    pr = re.search(r'PR\s*\(-/\+\)\s*:\s*([01])', doc)
+    if pr:
+        a['pr_total'] += 1
+        if pr.group(1) == '1':
+            a['pr_positive'] += 1
+
+    her2 = re.search(r'HER2\s*\(-/\+\)\s*:\s*([01])', doc)
+    if her2:
+        a['her2_total'] += 1
+        if her2.group(1) == '1':
+            a['her2_positive'] += 1
+
+    her2_ihc = re.search(r'HER2_IHC\s*\(0/\+1/\s*\+2/\s*\+3\)\s*:\s*([0123])', doc)
+    if her2_ihc:
+        ihc_map = {'0': 'IHC 0', '1': 'IHC 1+', '2': 'IHC 2+', '3': 'IHC 3+'}
+        a['her2_ihc'].append(ihc_map.get(her2_ihc.group(1), her2_ihc.group(1)))
+
+    ki67 = re.search(r'KI-67\s*LI\s*\(%\)\s*:\s*(\d+(?:\.\d+)?)', doc, re.IGNORECASE)
+    if ki67:
+        a['ki67_values'].append(float(ki67.group(1)))
+
+    stage = re.search(r'AJCC\s*stage\s*\(8판\)\s*:\s*(\d+)', doc, re.IGNORECASE)
+    if stage:
+        stage_map = {'1': 'Stage I', '2': 'Stage II', '3': 'Stage III', '4': 'Stage IV'}
+        a['stages'].append(stage_map.get(stage.group(1), f'Stage {stage.group(1)}'))
+
+    ng = re.search(r'NG\s*\(1/2/3\)\s*:\s*([123])', doc)
+    if ng:
+        a['ng_grades'].append(f'Grade {ng.group(1)}')
+
+    hg = re.search(r'HG\s*\(1/2/3/4\)\s*:\s*([1234])', doc)
+    if hg:
+        a['hg_grades'].append(f'Grade {hg.group(1)}')
+
+    ln = re.search(r'림프절\s*전이여부_수술당시.*?:\s*([0123])', doc)
+    if ln:
+        a['ln_total'] += 1
+        if ln.group(1) != '0':
+            a['ln_positive'] += 1
+
+    t_cat = re.search(r'T\s*category\s*:\s*(\d+)', doc)
+    if t_cat:
+        a['t_categories'].append(f'T{t_cat.group(1)}')
+
+    n_cat = re.search(r'N\s*category\s*:\s*(\d+)', doc)
+    if n_cat:
+        a['n_categories'].append(f'N{n_cat.group(1)}')
+
+    hist = re.search(r'진단명\s*\(histologic\s*type.*?\)\s*:\s*:\s*([1234])', doc)
+    if hist:
+        type_map = {'1': 'Ductal', '2': 'Lobular', '3': 'Mucinous', '4': 'Other'}
+        a['histologic_types'].append(type_map.get(hist.group(1), f'Type {hist.group(1)}'))
+
+    surg = re.search(r'수술명\s*\(partial/total\)\s*:\s*([12])', doc)
+    if surg:
+        a['surgery_types'].append('Total mastectomy' if surg.group(1) == '2' else 'Partial mastectomy')
+
+    location = re.search(r'암의\s*위치\s*\(Rt\./Lt\./Both\)\s*:\s*([123])', doc)
+    if location:
+        loc_map = {'1': 'Right', '2': 'Left', '3': 'Both'}
+        a['tumor_locations'].append(loc_map.get(location.group(1), location.group(1)))
+
+    num = re.search(r'암의\s*개수\s*\(single/multiple\)\s*:\s*([12])', doc)
+    if num:
+        a['tumor_numbers'].append('Single' if num.group(1) == '1' else 'Multiple')
+
+    recur_ax = re.search(r'Axillary\s*LN\s*재발\s*여부\s*\(0/1\)\s*:\s*([01])', doc)
+    if recur_ax:
+        a['recur_total'] += 1
+        if recur_ax.group(1) == '1':
+            a['recur_axillary'] += 1
+
+    recur_site = re.search(r'수술부위\s*재발여부\s*\(0/1\)\s*:\s*([01])', doc)
+    if recur_site and recur_site.group(1) == '1':
+        a['recur_site'] += 1
+
+    distant = re.search(r'다른\s*장기로\s*전이\s*여부\s*\(0/1\)\s*:\s*([01])', doc)
+    if distant and distant.group(1) == '1':
+        a['distant_meta'] += 1
+
+    survival = re.search(r'이\s*질병으로\s*사망여부.*?:\s*([012])', doc)
+    if survival:
+        a['survival_total'] += 1
+        s = survival.group(1)
+        if s == '0': a['alive'] += 1
+        elif s == '1': a['dead_disease'] += 1
+        elif s == '2': a['dead_other'] += 1
+
+    surg_date = re.search(r'수술연월일\s*:\s*(\d{4}-\d{2}-\d{2})', doc)
+    if surg_date:
+        try:
+            a['surgery_years'].append(int(surg_date.group(1)[:4]))
+        except: pass
+
+    neoadj = re.search(r'neoadjuvantCTx\s*\(0:무,\s*1:유\)\s*:\s*([01])', doc, re.IGNORECASE)
+    if neoadj:
+        a['neoadjuvant_ctx'].append('유' if neoadj.group(1) == '1' else '무')
+
+    adj_endo = re.search(r'adjuvant\s*Endocrine/Hormonal\s*Tx\s*:\s*([012])', doc, re.IGNORECASE)
+    if adj_endo:
+        a['adjuvant_endocrine'].append(adj_endo.group(1))
+
+    adj_rtx = re.search(r'adjuvant\s*RTx\s*:\s*([012])', doc, re.IGNORECASE)
+    if adj_rtx:
+        a['adjuvant_rtx'].append(adj_rtx.group(1))
+
+
+def _parse_stomach(doc: str, meta: dict, accum: dict):
+    """위암 필드 파싱"""
+    a = accum
+
+    age = re.search(r'진단나이\s*:\s*(\d+)', doc)
+    if age:
+        a['ages'].append(int(age.group(1)))
+
+    gender = re.search(r'성별\s*:\s*([01])', doc)
+    if gender:
+        a['genders'].append('Male' if gender.group(1) == '1' else 'Female')
+
+    treatment = re.search(r'수술\s*vs\s*ESD\s*:\s*([01])', doc)
+    if treatment:
+        a['treatment_types'].append('ESD' if treatment.group(1) == '1' else '수술')
+
+    size = re.search(r'크기\(cm\)\s*:\s*(\d+(?:\.\d+)?)', doc)
+    if size:
+        a['tumor_sizes'].append(float(size.group(1)))
+
+    t_stage = re.search(r'T\s*stage\s*:\s*([1-6])', doc)
+    if t_stage:
+        t_map = {'1': 'T1a', '2': 'T1b', '3': 'T2', '4': 'T3', '5': 'T4a', '6': 'T4b'}
+        a['t_stages'].append(t_map.get(t_stage.group(1), f'T{t_stage.group(1)}'))
+
+    n_stage = re.search(r'N\s*stage\s*:\s*([01234])', doc)
+    if n_stage:
+        n_map = {'0': 'N0', '1': 'N1', '2': 'N2', '3': 'N3a', '4': 'N3b'}
+        a['n_stages'].append(n_map.get(n_stage.group(1), f'N{n_stage.group(1)}'))
+
+    her2 = re.search(r'HER2\s*:\s*([012])', doc)
+    if her2:
+        a['her2_total'] += 1
+        if her2.group(1) == '2': a['her2_positive'] += 1
+
+    msi = re.search(r'MSI\s*:\s*([019])', doc)
+    if msi and msi.group(1) != '9':
+        a['msi_statuses'].append('MSI-H' if msi.group(1) == '1' else 'Intact')
+
+    lvi = re.search(r'LVI\s*:\s*([01])', doc)
+    if lvi:
+        a['lvi_total'] += 1
+        if lvi.group(1) == '1': a['lvi_positive'] += 1
+
+    pni = re.search(r'PNI\s*:\s*([01])', doc)
+    if pni:
+        a['pni_total'] += 1
+        if pni.group(1) == '1': a['pni_positive'] += 1
+
+    location = re.search(r'종양위치\s*:\s*([1234])', doc)
+    if location:
+        loc_map = {'1': 'Upper third', '2': 'Middle third', '3': 'Lower third', '4': 'Whole/Others'}
+        a['tumor_locations'].append(loc_map.get(location.group(1), location.group(1)))
+
+    event = re.search(r'event\s*:\s*([012])', doc)
+    if event and event.group(1) != '9':
+        a['survival_total'] += 1
+        e = event.group(1)
+        if e == '0': a['alive'] += 1
+        elif e == '1': a['recur_total'] += 1
+        elif e == '2': a['dead_disease'] += 1
+
+    surg_date = re.search(r'수술/ESD\s*날짜\s*:\s*(\d{4})', doc)
+    if surg_date:
+        a['surgery_years'].append(int(surg_date.group(1)))
+
+
+def _parse_thyroid(doc: str, meta: dict, accum: dict):
+    """갑상선암 필드 파싱"""
+    a = accum
+
+    age = re.search(r'나이\s*\(진단시\)\s*:\s*(\d+)', doc)
+    if age:
+        a['ages'].append(int(age.group(1)))
+
+    gender = re.search(r'성별\s*:\s*([12])', doc)
+    if gender:
+        a['genders'].append('Male' if gender.group(1) == '1' else 'Female')
+
+    size = re.search(r'암\s*size\s*\(mm\)_장경\s*:\s*(\d+(?:\.\d+)?)', doc)
+    if size:
+        a['tumor_sizes'].append(float(size.group(1)))
+
+    surg_method = re.search(r'수술방법\s*\(excision/lobectomy/total\)\s*:\s*([123])', doc)
+    if surg_method:
+        method_map = {'1': 'Excision', '2': 'Lobectomy', '3': 'Total thyroidectomy'}
+        a['surgery_types'].append(method_map.get(surg_method.group(1), surg_method.group(1)))
+
+    ete = re.search(r'Extrathyroid\s*extension.*?:\s*([012])', doc, re.IGNORECASE)
+    if ete:
+        ete_map = {'0': 'No', '1': 'Yes(micro)', '2': 'Yes(gross)'}
+        a['ete_statuses'].append(ete_map.get(ete.group(1), ete.group(1)))
+
+    t_cat = re.search(r'T\s*category\s*:\s*(\d+)', doc)
+    if t_cat:
+        a['t_categories'].append(f'T{t_cat.group(1)}')
+
+    n_cat = re.search(r'N\s*category\s*:\s*(\d+)', doc)
+    if n_cat:
+        a['n_categories'].append(f'N{n_cat.group(1)}')
+
+    stage = re.search(r'AJCC\s*stage\s*\(8판\)\s*:\s*(\d+)', doc, re.IGNORECASE)
+    if stage:
+        stage_map = {'1': 'Stage I', '2': 'Stage II', '3': 'Stage III', '4': 'Stage IV'}
+        a['stages'].append(stage_map.get(stage.group(1), f'Stage {stage.group(1)}'))
+
+    braf = re.search(r'BRAF\s*mutation\s*\(0/1\)\s*:\s*([01])', doc)
+    if braf:
+        a['braf_total'] += 1
+        if braf.group(1) == '1': a['braf_positive'] += 1
+
+    ln = re.search(r'림프절\s*전이여부_수술당시.*?:\s*([0123])', doc)
+    if ln:
+        a['ln_total'] += 1
+        if ln.group(1) != '0': a['ln_positive'] += 1
+
+    recur = re.search(r'Neck\s*LN\s*재발\s*여부.*?:\s*([01])', doc)
+    if recur:
+        a['recur_total'] += 1
+        if recur.group(1) == '1': a['recur_axillary'] += 1
+
+    distant = re.search(r'다른\s*장기로\s*전이\s*여부.*?:\s*([01])', doc)
+    if distant and distant.group(1) == '1':
+        a['distant_meta'] += 1
+
+    survival = re.search(r'이\s*질병으로\s*사망여부.*?:\s*([0123])', doc)
+    if survival:
+        a['survival_total'] += 1
+        s = survival.group(1)
+        if s == '0': a['alive'] += 1
+        elif s == '1': a['dead_disease'] += 1
+        elif s == '2': a['dead_other'] += 1
+
+    surg_date = re.search(r'수술연월일\s*:\s*(\d{4})', doc)
+    if surg_date:
+        a['surgery_years'].append(int(surg_date.group(1)))
+
+    location = re.search(r'암의\s*위치\s*\(Rt\./Lt\./isthmus/Both\)\s*:\s*([1234])', doc)
+    if location:
+        loc_map = {'1': 'Right', '2': 'Left', '3': 'Isthmus', '4': 'Both'}
+        a['tumor_locations'].append(loc_map.get(location.group(1), location.group(1)))
+
+    num = re.search(r'암의\s*개수\s*\(single/multiple\)\s*:\s*([12])', doc)
+    if num:
+        a['tumor_numbers'].append('Single' if num.group(1) == '1' else 'Multiple')
+
+    lympho = re.search(r'Non-neoplastic\s*parenchyma.*?:\s*([01])', doc)
+    if lympho:
+        a['lymphocytic_thyroiditis'].append('Yes' if lympho.group(1) == '1' else 'No')
+
+
+def _parse_colorectal(doc: str, meta: dict, accum: dict):
+    """대장암 필드 파싱 (컬럼 설명 시트 구조)"""
+    a = accum
+
+    gender = re.search(r'Level\s*I\.3\s*:\s*(Female|Male|\d+)', doc, re.IGNORECASE)
+    if gender:
+        a['genders'].append(gender.group(1))
+
+    age = re.search(r'Level\s*I\.4\s*:\s*(\d+)', doc)
+    if age:
+        try: a['ages'].append(int(age.group(1)))
+        except: pass
+
+    t_stage = re.search(r'Level\s*I\.8\s*:\s*([^\n\r]+)', doc, re.IGNORECASE)
+    if t_stage:
+        normalized_t = _normalize_colorectal_stage(t_stage.group(1), "T")
+        if normalized_t:
+            a['t_stages'].append(normalized_t)
+
+    n_stage = re.search(r'Level\s*I\.9\s*:\s*([^\n\r]+)', doc, re.IGNORECASE)
+    if n_stage:
+        normalized_n = _normalize_colorectal_stage(n_stage.group(1), "N")
+        if normalized_n:
+            a['n_stages'].append(normalized_n)
+
+    lvi = re.search(r'Level\s*I\.10\s*:\s*([01])', doc)
+    if lvi:
+        a['lvi_total'] += 1
+        if lvi.group(1) == '1': a['lvi_positive'] += 1
+
+    pni = re.search(r'Level\s*I\.11\s*:\s*([01])', doc)
+    if pni:
+        a['pni_total'] += 1
+        if pni.group(1) == '1': a['pni_positive'] += 1
+
+    msi = re.search(r'Level\s*I\.13\s*:\s*(\w+)', doc)
+    if msi:
+        a['msi_statuses'].append(msi.group(1))
+
+    kras = re.search(r'Level\s*I\.14\s*:\s*([01mutMUT\w]+)', doc)
+    if kras:
+        a['kras_statuses'].append(kras.group(1))
+
+    braf = re.search(r'Level\s*I\.16\s*:\s*([01mutMUT\w]+)', doc)
+    if braf:
+        a['braf_statuses'].append(braf.group(1))
+
+    survival = re.search(r'Level\s*I\.18\s*:\s*([01])', doc)
+    if survival:
+        a['survival_total'] += 1
+        if survival.group(1) == '1': a['alive'] += 1
+        else: a['dead_disease'] += 1
+
+    local_recur = re.search(r'Level\s*I\.20\s*:\s*([01])', doc)
+    if local_recur and local_recur.group(1) == '1':
+        a['recur_total'] += 1
+
+    distant = re.search(r'Level\s*I\.22\s*:\s*([01])', doc)
+    if distant and distant.group(1) == '1':
+        a['distant_meta'] += 1
+
+
+def _parse_hrd(doc: str, meta: dict, accum: dict):
+    """난소암 HRD 필드 파싱"""
+    a = accum
+
+    age = re.search(r'Age\s*:\s*(\d+)', doc)
+    if age:
+        a['ages'].append(int(age.group(1)))
+
+    hrd_group = re.search(r'HRD\s*group\s*:\s*([012])', doc)
+    if hrd_group:
+        a['hrd_groups'].append(int(hrd_group.group(1)))
+
+    hrd_score = re.search(r'HRD\s*score\s*:\s*(-?\d+(?:\.\d+)?)', doc)
+    if hrd_score:
+        a['hrd_scores'].append(float(hrd_score.group(1)))
+
+    brca1 = re.search(r'BRCA1\s*:\s*([01])', doc)
+    if brca1:
+        a['brca1_total'] += 1
+        if brca1.group(1) == '1': a['brca1_positive'] += 1
+
+    brca2 = re.search(r'BRCA2\s*:\s*([01])', doc)
+    if brca2:
+        a['brca2_total'] += 1
+        if brca2.group(1) == '1': a['brca2_positive'] += 1
+
+    figo = re.search(r'FIGO\s*stage\s*:\s*(\d+)', doc)
+    if figo:
+        figo_map = {
+            '1': 'I', '2': 'II', '3': 'III', '4': 'IV',
+            '5': 'IA', '6': 'IB', '7': 'IC', '8': 'IC1', '9': 'IC2', '10': 'IC3',
+            '11': 'IIA', '12': 'IIB', '13': 'IIIA', '14': 'IIIB', '15': 'IIIC',
+            '16': 'IVA', '17': 'IVB',
+        }
+        a['stages'].append(f'FIGO {figo_map.get(figo.group(1), figo.group(1))}')
+
+    histology = re.search(r'Histology\s*:\s*(\d+)', doc)
+    if histology:
+        hist_map = {'1': 'HGSC', '2': 'LGSC', '3': 'Endometrioid', '4': 'Clear cell', '5': 'Mucinous'}
+        a['histologic_types'].append(hist_map.get(histology.group(1), f'Type {histology.group(1)}'))
+
+    tp53 = re.search(r'TP53\s*mutation\s*:\s*([01])', doc)
+    if tp53:
+        a['tp53_total'] += 1
+        if tp53.group(1) == '1': a['tp53_positive'] += 1
+
+    msi = re.search(r'MSI\s*:\s*([01])', doc)
+    if msi:
+        a['msi_statuses'].append('MSI-H' if msi.group(1) == '1' else 'Intact')
+
+    death = re.search(r'사망여부\s*:\s*([01])', doc)
+    if death:
+        a['survival_total'] += 1
+        if death.group(1) == '0': a['alive'] += 1
+        else: a['dead_disease'] += 1
+
+    neoadj = re.search(r'선행항암치료\s*여부\s*:\s*([01])', doc)
+    if neoadj:
+        a['neoadjuvant_ctx'].append('유' if neoadj.group(1) == '1' else '무')
+
+    chemo_line = re.search(r'총\s*항암횟수\s*\(1st\s*line\)\s*:\s*(\d+)', doc)
+    if chemo_line:
+        a['chemo_cycles'].append(int(chemo_line.group(1)))
+
+
+def _parse_cervix(doc: str, meta: dict, accum: dict):
+    """자궁경부암 필드 파싱"""
+    a = accum
+
+    age = re.search(r'나이\s*\(진단시\)\s*:\s*(\d+)', doc)
+    if age:
+        a['ages'].append(int(age.group(1)))
+
+    hpv = re.search(r'HPV\s*유무\s*\(0:\s*No,\s*1:\s*Yes\)\s*:\s*([01])', doc)
+    if hpv:
+        a['hpv_total'] += 1
+        if hpv.group(1) == '1': a['hpv_positive'] += 1
+
+    hpv16 = re.search(r'HPV\s*16.*?:\s*([01])', doc)
+    if hpv16 and hpv16.group(1) == '1':
+        a['hpv16_positive'] += 1
+
+    hpv18 = re.search(r'HPV\s*18.*?:\s*([01])', doc)
+    if hpv18 and hpv18.group(1) == '1':
+        a['hpv18_positive'] += 1
+
+    hpv_hr = re.search(r'HPV\s*other\s*high\s*risk.*?:\s*([01])', doc)
+    if hpv_hr and hpv_hr.group(1) == '1':
+        a['hpv_other_hr_positive'] += 1
+
+    surg = re.search(r'수술\s*여부.*?:\s*([01234])', doc)
+    if surg:
+        surg_map = {'0': 'None', '1': 'LEEP', '2': 'Hysterectomy',
+                    '3': 'LEEP+Hysterectomy', '4': 'Trachelectomy'}
+        a['surgery_types'].append(surg_map.get(surg.group(1), surg.group(1)))
+
+    lvi = re.search(r'LVI\s*:\s*([01])', doc)
+    if lvi:
+        a['lvi_total'] += 1
+        if lvi.group(1) == '1': a['lvi_positive'] += 1
+
+    margin = re.search(r'Margin\s*status\s*\(-/\+\)\s*:\s*([01])', doc)
+    if margin:
+        a['margin_total'] += 1
+        if margin.group(1) == '1': a['margin_positive'] += 1
+
+    surg_date = re.search(r'수술연월일\s*:\s*(\d{4})', doc)
+    if surg_date:
+        a['surgery_years'].append(int(surg_date.group(1)))
+
+
+def _parse_prostate(doc: str, meta: dict, accum: dict):
+    """전립선암 필드 파싱"""
+    a = accum
+
+    age = re.search(r'Age\s*:\s*(\d+)', doc)
+    if age:
+        a['ages'].append(int(age.group(1)))
+
+    pgg = re.search(r'PGG\s*:\s*([12345])', doc)
+    if pgg:
+        a['pgg_grades'].append(f'Grade Group {pgg.group(1)}')
+
+    stage = re.search(r'Stage\s*:\s*([12345])', doc)
+    if stage:
+        a['stages'].append(f'Stage {stage.group(1)}')
+
+    pni = re.search(r'PNI\s*:\s*([01])', doc)
+    if pni:
+        a['pni_total'] += 1
+        if pni.group(1) == '1': a['pni_positive'] += 1
+
+    lvi = re.search(r'LVI\s*:\s*([01])', doc)
+    if lvi:
+        a['lvi_total'] += 1
+        if lvi.group(1) == '1': a['lvi_positive'] += 1
+
+    bcr = re.search(r'BCR\s*:\s*([01])', doc)
+    if bcr:
+        a['bcr_total'] += 1
+        if bcr.group(1) == '1': a['bcr_positive'] += 1
+
+    distant = re.search(r'Distant_meta\s*:\s*([01])', doc)
+    if distant and distant.group(1) == '1':
+        a['distant_meta'] += 1
+
+    overall_mortality = re.search(r'Overall_Mortality\s*:\s*([01])', doc)
+    if overall_mortality:
+        a['survival_total'] += 1
+        if overall_mortality.group(1) == '0': a['alive'] += 1
+        else: a['dead_disease'] += 1
+
+    op_date = re.search(r'Op_Date\s*:\s*(\d{4})', doc)
+    if op_date:
+        a['surgery_years'].append(int(op_date.group(1)))
+
+
+def _parse_liver(doc: str, meta: dict, accum: dict):
+    """간암 필드 파싱"""
+    a = accum
+
+    age = re.search(r'나이\s*\(진단시\)\s*:\s*(\d+)', doc)
+    if age:
+        a['ages'].append(int(age.group(1)))
+
+    gender = re.search(r'성별\s*:\s*([12])', doc)
+    if gender:
+        a['genders'].append('Male' if gender.group(1) == '1' else 'Female')
+
+    grade = re.search(r'조직학적등급\s*:\s*([1234])', doc)
+    if grade:
+        a['hg_grades'].append(f'Grade {grade.group(1)}')
+
+    size = re.search(r'암\s*size\s*\(c1\)_장경\s*:\s*(\d+(?:\.\d+)?)', doc)
+    if size:
+        a['tumor_sizes'].append(float(size.group(1)))
+
+    tumor_num = re.search(r'암의\s*개수\s*:\s*(\d+)', doc)
+    if tumor_num:
+        n = int(tumor_num.group(1))
+        a['tumor_numbers'].append('Single' if n == 1 else 'Multiple')
+
+    hbsag = re.search(r'혈청\s*HBsAg\s*유무\s*:\s*([01])', doc)
+    if hbsag:
+        a['hbsag_total'] += 1
+        if hbsag.group(1) == '1': a['hbsag_positive'] += 1
+
+    hcv = re.search(r'혈청\s*anti-HCV\s*유무\s*:\s*([01])', doc)
+    if hcv:
+        a['hcv_total'] += 1
+        if hcv.group(1) == '1': a['hcv_positive'] += 1
+
+    recur = re.search(r'재발\s*\(간\)\s*여부\s*:\s*([01])', doc)
+    if recur:
+        a['recur_total'] += 1
+        if recur.group(1) == '1': a['recur_axillary'] += 1
+
+    distant = re.search(r'다른\s*장기로\s*전이\s*여부\s*:\s*([01])', doc)
+    if distant and distant.group(1) == '1':
+        a['distant_meta'] += 1
+
+    survival = re.search(r'이\s*질병으로\s*사망여부\s*:\s*([01])', doc)
+    if survival:
+        a['survival_total'] += 1
+        if survival.group(1) == '0': a['alive'] += 1
+        else: a['dead_disease'] += 1
+
+    biopsy_date = re.search(r'생검\s*\(수술\)\s*연월일\s*:\s*(\d{4})', doc)
+    if biopsy_date:
+        a['surgery_years'].append(int(biopsy_date.group(1)))
+
+
+# ============================================================
+# 공통 누산기 초기화
+# ============================================================
+
+def _make_accum():
+    return {
+        # 공통
+        'ages': [], 'genders': [], 'tumor_sizes': [], 'surgery_years': [],
+        'tumor_locations': [], 'tumor_numbers': [],
+        'stages': [], 't_categories': [], 'n_categories': [],
+        't_stages': [], 'n_stages': [],
+        'histologic_types': [], 'surgery_types': [],
+        'lvi_total': 0, 'lvi_positive': 0,
+        'pni_total': 0, 'pni_positive': 0,
+        'ln_total': 0, 'ln_positive': 0,
+        'survival_total': 0, 'alive': 0, 'dead_disease': 0, 'dead_other': 0,
+        'recur_total': 0, 'recur_axillary': 0, 'recur_site': 0,
+        'distant_meta': 0,
+        # breast
+        'er_total': 0, 'er_positive': 0,
+        'pr_total': 0, 'pr_positive': 0,
+        'her2_total': 0, 'her2_positive': 0,
+        'her2_ihc': [], 'ki67_values': [],
+        'ng_grades': [], 'hg_grades': [],
+        'adjuvant_endocrine': [], 'adjuvant_rtx': [],
+        'neoadjuvant_ctx': [],
+        # stomach
+        'treatment_types': [], 'msi_statuses': [],
+        'kras_statuses': [], 'braf_statuses': [],
+        # thyroid
+        'braf_total': 0, 'braf_positive': 0,
+        'ete_statuses': [], 'lymphocytic_thyroiditis': [],
+        # hrd
+        'hrd_groups': [], 'hrd_scores': [],
+        'brca1_total': 0, 'brca1_positive': 0,
+        'brca2_total': 0, 'brca2_positive': 0,
+        'tp53_total': 0, 'tp53_positive': 0,
+        'chemo_cycles': [],
+        # cervix
+        'hpv_total': 0, 'hpv_positive': 0,
+        'hpv16_positive': 0, 'hpv18_positive': 0, 'hpv_other_hr_positive': 0,
+        'margin_total': 0, 'margin_positive': 0,
+        # prostate
+        'pgg_grades': [], 'bcr_total': 0, 'bcr_positive': 0,
+        # liver
+        'hbsag_total': 0, 'hbsag_positive': 0,
+        'hcv_total': 0, 'hcv_positive': 0,
+    }
+
+
+# ============================================================
+# 결과 포맷터
+# ============================================================
+
+def _format_stats(accum: dict, category: str, hospital_label: str, total_docs: int, unique_count: int) -> str:
+    a = accum
+    cat_label = CATEGORY_LABEL.get(category, category)
+    lines = [f"=== {hospital_label} {cat_label} CRF 데이터 통계 ===",
+             f"\n총 환자 수: {unique_count}명",
+             f"총 문서 수: {total_docs}개"]
+
+    def pct(pos, total):
+        return f"{round(pos/total*100,1)}%" if total else "N/A"
+
+    def mean_range(lst, unit=""):
+        if not lst: return None
+        return f"평균 {round(sum(lst)/len(lst),1)}{unit} (범위: {min(lst)}~{max(lst)}{unit}, n={len(lst)})"
+
+    # 나이
+    if a['ages']:
+        lines.append(f"\n진단 시 나이: {mean_range(a['ages'], '세')}")
+
+    # 성별
+    if a['genders']:
+        gc = Counter(a['genders'])
+        lines.append("\n성별 분포:")
+        for g, cnt in gc.items():
+            lines.append(f"  - {g}: {cnt}명 ({pct(cnt, len(a['genders']))})")
+
+    # 종양 크기
+    if a['tumor_sizes']:
+        unit = "cm" if category in ("stomach", "liver") else "mm"
+        lines.append(f"\n종양 크기: {mean_range(a['tumor_sizes'], unit)}")
+
+    # 종양 위치
+    if a['tumor_locations']:
+        lines.append("\n종양 위치:")
+        for loc, cnt in Counter(a['tumor_locations']).items():
+            lines.append(f"  - {loc}: {cnt}명")
+
+    # 종양 개수
+    if a['tumor_numbers']:
+        lines.append("\n종양 개수:")
+        for num, cnt in Counter(a['tumor_numbers']).items():
+            lines.append(f"  - {num}: {cnt}명")
+
+    # Stage
+    if a['stages']:
+        lines.append("\nStage 분포:")
+        for s, cnt in sorted(Counter(a['stages']).items()):
+            lines.append(f"  - {s}: {cnt}명")
+
+    # T/N category (breast/thyroid)
+    if a['t_categories']:
+        lines.append("\nT category:")
+        for t, cnt in sorted(Counter(a['t_categories']).items()):
+            lines.append(f"  - {t}: {cnt}명")
+    if a['n_categories']:
+        lines.append("\nN category:")
+        for n, cnt in sorted(Counter(a['n_categories']).items()):
+            lines.append(f"  - {n}: {cnt}명")
+
+    # T/N stage (stomach/colorectal)
+    if a['t_stages']:
+        lines.append("\nT stage:")
+        for t, cnt in sorted(Counter(a['t_stages']).items()):
+            lines.append(f"  - {t}: {cnt}명")
+    if a['n_stages']:
+        lines.append("\nN stage:")
+        for n, cnt in sorted(Counter(a['n_stages']).items()):
+            lines.append(f"  - {n}: {cnt}명")
+
+    # 조직학적 타입
+    if a['histologic_types']:
+        lines.append("\n조직학적 타입:")
+        for ht, cnt in Counter(a['histologic_types']).items():
+            lines.append(f"  - {ht}: {cnt}명")
+
+    # 수술 방법
+    if a['surgery_types']:
+        lines.append("\n수술/치료 방법:")
+        for st, cnt in Counter(a['surgery_types']).items():
+            lines.append(f"  - {st}: {cnt}명")
+
+    # 수술 연도
+    if a['surgery_years']:
+        lines.append("\n수술/시술 연도 분포:")
+        for yr, cnt in sorted(Counter(a['surgery_years']).items()):
+            lines.append(f"  - {yr}: {cnt}명")
+
+    # --- breast 전용 ---
+    if category == 'breast':
+        if a['er_total']:
+            lines.append(f"\nER: 양성 {a['er_positive']}명 ({pct(a['er_positive'], a['er_total'])}) / 전체 {a['er_total']}명")
+        if a['pr_total']:
+            lines.append(f"PR: 양성 {a['pr_positive']}명 ({pct(a['pr_positive'], a['pr_total'])}) / 전체 {a['pr_total']}명")
+        if a['her2_total']:
+            lines.append(f"HER2: 양성 {a['her2_positive']}명 ({pct(a['her2_positive'], a['her2_total'])}) / 전체 {a['her2_total']}명")
+        if a['her2_ihc']:
+            lines.append("\nHER2 IHC 등급:")
+            for g, cnt in sorted(Counter(a['her2_ihc']).items()):
+                lines.append(f"  - {g}: {cnt}명")
+        if a['ki67_values']:
+            lines.append(f"\nKi-67: {mean_range(a['ki67_values'], '%')}")
+        if a['ng_grades']:
+            lines.append("\nNuclear Grade:")
+            for g, cnt in sorted(Counter(a['ng_grades']).items()):
+                lines.append(f"  - {g}: {cnt}명")
+        if a['hg_grades']:
+            lines.append("\nHistologic Grade:")
+            for g, cnt in sorted(Counter(a['hg_grades']).items()):
+                lines.append(f"  - {g}: {cnt}명")
+        if a['neoadjuvant_ctx']:
+            lines.append(f"\n수술 전 항암치료: {Counter(a['neoadjuvant_ctx'])}")
+        if a['adjuvant_endocrine']:
+            ac = Counter(a['adjuvant_endocrine'])
+            yes = ac.get('1', 0) + ac.get('2', 0)
+            lines.append(f"보조 호르몬 치료: 받음 {yes}명 / 전체 {len(a['adjuvant_endocrine'])}명")
+        if a['adjuvant_rtx']:
+            ac = Counter(a['adjuvant_rtx'])
+            yes = ac.get('1', 0) + ac.get('2', 0)
+            lines.append(f"보조 방사선 치료: 받음 {yes}명 / 전체 {len(a['adjuvant_rtx'])}명")
+
+    # --- stomach 전용 ---
+    if category == 'stomach':
+        if a['her2_total']:
+            lines.append(f"\nHER2 (3+ 양성): {a['her2_positive']}명 / 전체 {a['her2_total']}명 ({pct(a['her2_positive'], a['her2_total'])})")
+        if a['treatment_types']:
+            lines.append("\n치료 방법 (수술 vs ESD):")
+            for t, cnt in Counter(a['treatment_types']).items():
+                lines.append(f"  - {t}: {cnt}명")
+        if a['msi_statuses']:
+            lines.append("\nMSI 상태:")
+            for m, cnt in Counter(a['msi_statuses']).items():
+                lines.append(f"  - {m}: {cnt}명")
+
+    # --- thyroid 전용 ---
+    if category == 'thyroid':
+        if a['braf_total']:
+            lines.append(f"\nBRAF 변이: 양성 {a['braf_positive']}명 ({pct(a['braf_positive'], a['braf_total'])}) / 전체 {a['braf_total']}명")
+        if a['ete_statuses']:
+            lines.append("\nExtrathyroid Extension:")
+            for e, cnt in Counter(a['ete_statuses']).items():
+                lines.append(f"  - {e}: {cnt}명")
+        if a['lymphocytic_thyroiditis']:
+            lines.append("\nLymphocytic Thyroiditis:")
+            for l, cnt in Counter(a['lymphocytic_thyroiditis']).items():
+                lines.append(f"  - {l}: {cnt}명")
+
+    # --- colorectal 전용 ---
+    if category == 'colorectal':
+        if a['msi_statuses']:
+            lines.append("\nMSI 상태:")
+            for m, cnt in Counter(a['msi_statuses']).items():
+                lines.append(f"  - {m}: {cnt}명")
+        if a['kras_statuses']:
+            lines.append(f"\nKRAS 변이: {Counter(a['kras_statuses'])}")
+        if a['braf_statuses']:
+            lines.append(f"BRAF 변이: {Counter(a['braf_statuses'])}")
+
+    # --- hrd 전용 ---
+    if category == 'hrd':
+        if a['hrd_groups']:
+            gc = Counter(a['hrd_groups'])
+            hrd_pos = gc.get(1, 0) + gc.get(2, 0)
+            hrd_neg = gc.get(0, 0)
+            lines.append(f"\nHRD 상태: 양성(1·2) {hrd_pos}명 / 음성(0) {hrd_neg}명 / 전체 {len(a['hrd_groups'])}명")
+        if a['hrd_scores']:
+            lines.append(f"HRD Score: {mean_range(a['hrd_scores'])}")
+        if a['brca1_total']:
+            lines.append(f"\nBRCA1 변이: {a['brca1_positive']}명 ({pct(a['brca1_positive'], a['brca1_total'])}) / {a['brca1_total']}명")
+        if a['brca2_total']:
+            lines.append(f"BRCA2 변이: {a['brca2_positive']}명 ({pct(a['brca2_positive'], a['brca2_total'])}) / {a['brca2_total']}명")
+        if a['tp53_total']:
+            lines.append(f"TP53 변이: {a['tp53_positive']}명 ({pct(a['tp53_positive'], a['tp53_total'])}) / {a['tp53_total']}명")
+        if a['msi_statuses']:
+            lines.append(f"\nMSI: {Counter(a['msi_statuses'])}")
+        if a['neoadjuvant_ctx']:
+            lines.append(f"\n선행항암치료: {Counter(a['neoadjuvant_ctx'])}")
+        if a['chemo_cycles']:
+            lines.append(f"1차 항암 횟수: {mean_range(a['chemo_cycles'], '회')}")
+
+    # --- cervix 전용 ---
+    if category == 'cervix':
+        if a['hpv_total']:
+            lines.append(f"\nHPV 양성: {a['hpv_positive']}명 ({pct(a['hpv_positive'], a['hpv_total'])}) / {a['hpv_total']}명")
+            if a['hpv_positive']:
+                lines.append(f"  - HPV 16: {a['hpv16_positive']}명")
+                lines.append(f"  - HPV 18: {a['hpv18_positive']}명")
+                lines.append(f"  - 기타 고위험군: {a['hpv_other_hr_positive']}명")
+        if a['margin_total']:
+            lines.append(f"\n절제연 양성: {a['margin_positive']}명 ({pct(a['margin_positive'], a['margin_total'])}) / {a['margin_total']}명")
+
+    # --- prostate 전용 ---
+    if category == 'prostate':
+        if a['pgg_grades']:
+            lines.append("\nPathologic Gleason Grade Group:")
+            for g, cnt in sorted(Counter(a['pgg_grades']).items()):
+                lines.append(f"  - {g}: {cnt}명")
+        if a['bcr_total']:
+            lines.append(f"\nBCR(생화학적 재발): {a['bcr_positive']}명 ({pct(a['bcr_positive'], a['bcr_total'])}) / {a['bcr_total']}명")
+
+    # --- liver 전용 ---
+    if category == 'liver':
+        if a['hg_grades']:
+            lines.append("\n조직학적 등급:")
+            for g, cnt in sorted(Counter(a['hg_grades']).items()):
+                lines.append(f"  - {g}: {cnt}명")
+        if a['hbsag_total']:
+            lines.append(f"\nHBsAg 양성(B형간염): {a['hbsag_positive']}명 ({pct(a['hbsag_positive'], a['hbsag_total'])}) / {a['hbsag_total']}명")
+        if a['hcv_total']:
+            lines.append(f"anti-HCV 양성(C형간염): {a['hcv_positive']}명 ({pct(a['hcv_positive'], a['hcv_total'])}) / {a['hcv_total']}명")
+
+    # 공통 - LVI/PNI
+    if a['lvi_total']:
+        lines.append(f"\nLVI(림프혈관 침윤): 양성 {a['lvi_positive']}명 ({pct(a['lvi_positive'], a['lvi_total'])}) / {a['lvi_total']}명")
+    if a['pni_total']:
+        lines.append(f"PNI(신경주위 침윤): 양성 {a['pni_positive']}명 ({pct(a['pni_positive'], a['pni_total'])}) / {a['pni_total']}명")
+
+    # 림프절 전이 (breast/thyroid)
+    if a['ln_total']:
+        lines.append(f"\n림프절 전이: {a['ln_positive']}명 ({pct(a['ln_positive'], a['ln_total'])}) / {a['ln_total']}명")
+
+    # 재발
+    if a['recur_total']:
+        lines.append(f"\n재발: {a['recur_axillary']}명 / {a['recur_total']}명 ({pct(a['recur_axillary'], a['recur_total'])})")
+    if a['distant_meta']:
+        lines.append(f"원격 전이: {a['distant_meta']}명")
+    if a['recur_site']:
+        lines.append(f"수술 부위 재발: {a['recur_site']}명")
+
+    # 생존
+    if a['survival_total']:
+        lines.append(f"\n생존 현황:")
+        lines.append(f"  - 생존: {a['alive']}명 ({pct(a['alive'], a['survival_total'])})")
+        lines.append(f"  - 질병 사망: {a['dead_disease']}명")
+        if a['dead_other']:
+            lines.append(f"  - 기타 사망: {a['dead_other']}명")
+        lines.append(f"  - 전체: {a['survival_total']}명")
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# Mixin 클래스
+# ============================================================
+
+PARSER_MAP = {
+    'breast': _parse_breast,
+    'stomach': _parse_stomach,
+    'thyroid': _parse_thyroid,
+    'colorectal': _parse_colorectal,
+    'hrd': _parse_hrd,
+    'cervix': _parse_cervix,
+    'prostate': _parse_prostate,
+    'liver': _parse_liver,
+}
+
+
 class CRFStatisticsMixin:
-    """CRF 데이터 통계 계산을 위한 Mixin 클래스"""
+    """CRF 데이터 통계 계산을 위한 Mixin 클래스 (8개 암종 통합)"""
 
     def calculate_crf_statistics(self, documents: list, metadatas: list, hospital_code: str = None) -> dict:
         """
-        CRF 문서 리스트에서 통계 계산
-
-        Args:
-            documents: ChromaDB에서 가져온 문서 리스트
-            metadatas: 문서 메타데이터 리스트
-            hospital_code: 병원 코드 (예: "02")
+        CRF 문서 리스트에서 암종별 통계 계산
 
         Returns:
-            통계 데이터 딕셔너리
+            암종별 통계 딕셔너리 (formatted_text 포함)
         """
         logger.info(f"📊 통계 계산 시작: {len(documents)}개 문서")
 
-        stats = {
-            'total_patients': 0,
-            'total_documents': len(documents),
-            'hospital_code': hospital_code,
-            'hospital_name': self._get_hospital_name(hospital_code) if hospital_code else "전체 병원",
-            'age_stats': {},
-            'tumor_size_stats': {},
-            'er_stats': {},
-            'pr_stats': {},
-            'her2_stats': {},
-            'biomarker_combinations': {},
-            'stage_distribution': {},
-            'ng_distribution': {},  # Nuclear Grade
-            'hg_distribution': {},  # Histologic Grade
-            'ki67_stats': {},  # Ki-67 LI
-            'ki67_thresholds': [],  # Ki-67 임계값별 통계
-            'lymph_node_stats': {},  # 림프절 전이
-            'tnm_stats': {},  # T/N/M category
-            'histologic_type_distribution': {},  # 조직학적 타입
-            'surgery_type_distribution': {},  # 수술 방법
-            'recurrence_stats': {},  # 재발 여부
-            'survival_stats': {},  # 생존 여부
-            'hospital_counts': {},  # 병원별 건수
-            'surgery_year_distribution': {},  # 수술 연도별 건수
-            'stage_ng_distribution': {},  # Stage x NG
-            'stage_hg_distribution': {},  # Stage x HG
-            # 새로 추가된 통계
-            'tumor_location_distribution': {},  # 암의 위치 (Rt./Lt./Both)
-            'tumor_number_distribution': {},  # 암의 개수 (single/multiple)
-            'her2_ihc_distribution': {},  # HER2 IHC 등급
-            'dcis_lcis_distribution': {},  # DCIS/LCIS 여부
-            'mitotic_rate_distribution': {},  # HG score 3 (Mitotic Rate)
-            'er_allred_stats': {},  # ER Allred score
-            'pr_allred_stats': {},  # PR Allred score
-            'adjuvant_endocrine_stats': {},  # 보조 호르몬 치료
-            'adjuvant_rtx_stats': {},  # 보조 방사선 치료
-            'neoadjuvant_ctx_stats': {},  # 수술 전 항암 치료
-            'neoadjuvant_response_distribution': {},  # 수술 전 항암 반응
-            'followup_period_stats': {},  # 추적 관찰 기간
-            'unique_records': set()
-        }
-
-        # 데이터 파싱
-        ages = []
-        tumor_sizes = []
-        er_positive = 0
-        er_total = 0
-        pr_positive = 0
-        pr_total = 0
-        her2_positive = 0
-        her2_total = 0
-        stages = []
-        ng_grades = []  # Nuclear Grade
-        hg_grades = []  # Histologic Grade
-        ki67_values = []  # Ki-67
-        lymph_node_positive = 0  # 림프절 전이 양성
-        lymph_node_total = 0
-        lymph_node_counts = []  # 전이 림프절 개수
-        t_categories = []
-        n_categories = []
-        m_categories = []
-        histologic_types = []
-        surgery_types = []
-        axillary_recurrence = 0
-        surgery_site_recurrence = 0
-        distant_metastasis = 0
-        recurrence_total = 0
-        alive = 0
-        dead_from_disease = 0
-        dead_from_other = 0
-        survival_total = 0
-        # 새로 추가된 변수들
-        tumor_locations = []  # 암의 위치
-        tumor_numbers = []  # 암의 개수
-        her2_ihc_grades = []  # HER2 IHC 등급
-        dcis_lcis_statuses = []  # DCIS/LCIS 여부
-        mitotic_rates = []  # Mitotic Rate
-        er_allred_scores = []  # ER Allred score
-        pr_allred_scores = []  # PR Allred score
-        adjuvant_endocrine = []  # 보조 호르몬 치료
-        adjuvant_rtx = []  # 보조 방사선 치료
-        neoadjuvant_ctx = []  # 수술 전 항암 치료
-        neoadjuvant_response = []  # 수술 전 항암 반응
-        surgery_dates = []  # 수술 날짜
-        followup_dates = []  # 추적 관찰 날짜
-        # 카운터
-        hospital_counter = Counter()
-        surgery_year_counter = Counter()
-        stage_ng_counter = Counter()
-        stage_hg_counter = Counter()
-        biomarker_combo_counter = Counter()
-        KI67_THRESHOLDS = [10, 20, 30]  # 필요시 확장
+        # 암종별로 문서 분리
+        cat_docs = {}
+        cat_metas = {}
+        cat_records = {}
 
         for doc, meta in zip(documents, metadatas):
-            # Record ID 수집 (고유 환자 수)
-            record_id = meta.get('record_id')
-            if record_id:
-                stats['unique_records'].add(record_id)
+            cat = meta.get('category', 'unknown')
+            st = meta.get('sheet_type', '')
+            if st != 'data':
+                continue
+            if cat not in cat_docs:
+                cat_docs[cat] = []
+                cat_metas[cat] = []
+                cat_records[cat] = set()
+            cat_docs[cat].append(doc)
+            cat_metas[cat].append(meta)
+            rid = meta.get('record_id')
+            if rid:
+                cat_records[cat].add(rid)
 
-            hospital_code = meta.get('hospital')
-            if hospital_code:
-                hospital_counter[hospital_code] += 1
+        # 암종별 통계 계산
+        results = {}
+        all_texts = []
 
-            # 수술 연도 추출 (메타데이터 필드 우선)
-            surgery_date = meta.get("수술연월일") or meta.get("surgery_date")
-            if surgery_date:
-                try:
-                    year = int(str(surgery_date)[:4])
-                    surgery_year_counter[year] += 1
-                except Exception:
-                    pass
+        for cat, docs in cat_docs.items():
+            parser = PARSER_MAP.get(cat)
+            if not parser:
+                continue
 
-            stage_val = None
-            ng_val = None
-            hg_val = None
-            er_val = None
-            pr_val = None
-            her2_val = None
+            accum = _make_accum()
+            hosp_counter = Counter()
 
-            # 진단 시 나이 추출 (형식: "나이 (진단시): 63")
-            age_match = re.search(r'나이\s*\(진단시\)\s*:\s*(\d+)', doc)
-            if age_match:
-                try:
-                    ages.append(int(age_match.group(1)))
-                except ValueError:
-                    pass
+            for doc, meta in zip(docs, cat_metas[cat]):
+                parser(doc, meta, accum)
+                hc = meta.get('hospital', '')
+                if hc:
+                    hosp_counter[hc] += 1
 
-            # 암 크기 (장경) 추출 (형식: "암 size (mm)_장경: 19")
-            size_match = re.search(r'암\s*size\s*\(mm\)_장경\s*:\s*(\d+(?:\.\d+)?)', doc)
-            if size_match:
-                try:
-                    tumor_sizes.append(float(size_match.group(1)))
-                except ValueError:
-                    pass
+            unique_count = len(cat_records.get(cat, set())) or len(docs)
+            hosp_label = _get_hospital_name(hospital_code, cat) if hospital_code else "전체 병원"
 
-            # ER 상태 (형식: "ER (-/+): 1" → 1은 양성, 0은 음성)
-            er_match = re.search(r'ER\s*\(-/\+\)\s*:\s*([01])', doc)
-            if er_match:
-                er_total += 1
-                er_val = er_match.group(1)
-                if er_match.group(1) == '1':
-                    er_positive += 1
+            text = _format_stats(accum, cat, hosp_label, len(docs), unique_count)
 
-            # PR 상태 (형식: "PR (-/+): 1" → 1은 양성, 0은 음성)
-            pr_match = re.search(r'PR\s*\(-/\+\)\s*:\s*([01])', doc)
-            if pr_match:
-                pr_total += 1
-                pr_val = pr_match.group(1)
-                if pr_match.group(1) == '1':
-                    pr_positive += 1
+            # 병원별 건수 추가
+            if hosp_counter:
+                hospital_lines = ["\n병원별 건수:"]
+                for hc, cnt in sorted(hosp_counter.items()):
+                    hn = _get_hospital_name(hc, cat)
+                    hospital_lines.append(f"  - {hn} (코드: {hc}): {cnt}명")
+                text += "\n" + "\n".join(hospital_lines)
 
-            # HER2 상태 (형식: "HER2 (-/+): 0" → 1은 양성, 0은 음성)
-            her2_match = re.search(r'HER2\s*\(-/\+\)\s*:\s*([01])', doc)
-            if her2_match:
-                her2_total += 1
-                her2_val = her2_match.group(1)
-                if her2_match.group(1) == '1':
-                    her2_positive += 1
-            # 바이오마커 조합 카운트 (ER/PR/HER2 모두 값이 있는 경우)
-            if er_val is not None and pr_val is not None and her2_val is not None:
-                er_pos = er_val == '1'
-                pr_pos = pr_val == '1'
-                her2_pos = her2_val == '1'
-                biomarker_combo_counter['her2_positive'] += int(her2_pos)
-                biomarker_combo_counter['er_positive'] += int(er_pos)
-                biomarker_combo_counter['pr_positive'] += int(pr_pos)
-                biomarker_combo_counter['er_pr_positive'] += int(er_pos and pr_pos)
-                biomarker_combo_counter['hr_positive_her2_negative'] += int((er_pos or pr_pos) and not her2_pos)
-                biomarker_combo_counter['triple_negative'] += int((not er_pos) and (not pr_pos) and (not her2_pos))
+            results[cat] = {
+                'accum': accum,
+                'formatted_text': text,
+                'total_docs': len(docs),
+                'unique_count': unique_count,
+                'hospital_counts': dict(hosp_counter),
+            }
+            all_texts.append(text)
 
-            # AJCC Stage (형식: "AJCC stage (8판): 1" → 숫자를 Stage I, Stage II 등으로 변환)
-            stage_match = re.search(r'AJCC\s*stage\s*\(8판\)\s*:\s*(\d+)', doc, re.IGNORECASE)
-            if stage_match:
-                stage_num = stage_match.group(1)
-                # 1 → Stage I, 2 → Stage II, 등
-                stage_map = {'1': 'Stage I', '2': 'Stage II', '3': 'Stage III', '4': 'Stage IV'}
-                stage_name = stage_map.get(stage_num, f'Stage {stage_num}')
-                stages.append(stage_name)
-                stage_val = stage_name
-
-            # Nuclear Grade (형식: "NG (1/2/3): 2")
-            ng_match = re.search(r'NG\s*\(1/2/3\)\s*:\s*([123])', doc)
-            if ng_match:
-                ng_grade = f'Grade {ng_match.group(1)}'
-                ng_grades.append(ng_grade)
-                ng_val = ng_grade
-
-            # Histologic Grade (형식: "HG (1/2/3/4): 1")
-            hg_match = re.search(r'HG\s*\(1/2/3/4\)\s*:\s*([1234])', doc)
-            if hg_match:
-                hg_grade = f'Grade {hg_match.group(1)}'
-                hg_grades.append(hg_grade)
-                hg_val = hg_grade
-            # Stage x Grade 교차 카운트
-            if stage_val and ng_val:
-                stage_ng_counter[(stage_val, ng_val)] += 1
-            if stage_val and hg_val:
-                stage_hg_counter[(stage_val, hg_val)] += 1
-
-            # Ki-67 (형식: "KI-67 LI (%): 12")
-            ki67_match = re.search(r'KI-67\s*LI\s*\(%\)\s*:\s*(\d+(?:\.\d+)?)', doc, re.IGNORECASE)
-            if ki67_match:
-                try:
-                    ki67_values.append(float(ki67_match.group(1)))
-                except ValueError:
-                    pass
-
-            # 림프절 전이 여부 (형식: "림프절 전이여부_수술당시 (0: No, 1: Yes_SN, 2: Yes_nonSN, 3: Yes_SN+nonSN): 0")
-            ln_match = re.search(r'림프절\s*전이여부_수술당시.*?:\s*([0123])', doc)
-            if ln_match:
-                lymph_node_total += 1
-                if ln_match.group(1) != '0':  # 0이 아니면 전이 있음
-                    lymph_node_positive += 1
-
-            # 전이 림프절 개수 (형식: "전이 림프절 개수_수술당시: 0")
-            ln_count_match = re.search(r'전이\s*림프절\s*개수_수술당시\s*:\s*(\d+)', doc)
-            if ln_count_match:
-                try:
-                    count = int(ln_count_match.group(1))
-                    if count > 0:
-                        lymph_node_counts.append(count)
-                except ValueError:
-                    pass
-
-            # T category (형식: "T category: 1")
-            t_match = re.search(r'T\s*category\s*:\s*(\d+)', doc)
-            if t_match:
-                t_categories.append(f'T{t_match.group(1)}')
-
-            # N category (형식: "N category: 0")
-            n_match = re.search(r'N\s*category\s*:\s*(\d+)', doc)
-            if n_match:
-                n_categories.append(f'N{n_match.group(1)}')
-
-            # M category (형식: "M category (수술당시 원격전이여부_0: pM0, 1: pM1): 0")
-            m_match = re.search(r'M\s*category.*?:\s*([01])', doc)
-            if m_match:
-                m_categories.append('M1' if m_match.group(1) == '1' else 'M0')
-
-            # 조직학적 타입 (형식: "진단명 (histologic type: ductal/ lobular/ mucinous/ other): : 1")
-            histologic_match = re.search(r'진단명\s*\(histologic\s*type.*?\)\s*:\s*:\s*([1234])', doc)
-            if histologic_match:
-                type_map = {'1': 'Ductal', '2': 'Lobular', '3': 'Mucinous', '4': 'Other'}
-                histologic_types.append(type_map.get(histologic_match.group(1), f'Type {histologic_match.group(1)}'))
-
-            # 수술 방법 (형식: "수술명 (partial/total): 2")
-            surgery_match = re.search(r'수술명\s*\(partial/total\)\s*:\s*([12])', doc)
-            if surgery_match:
-                surgery_types.append('Total mastectomy' if surgery_match.group(1) == '2' else 'Partial mastectomy')
-
-            # 재발 여부 - Axillary LN 재발 (형식: "Axillary LN 재발 여부 (0/1): 0")
-            axillary_rec_match = re.search(r'Axillary\s*LN\s*재발\s*여부\s*\(0/1\)\s*:\s*([01])', doc)
-            if axillary_rec_match:
-                recurrence_total += 1
-                if axillary_rec_match.group(1) == '1':
-                    axillary_recurrence += 1
-
-            # 재발 여부 - 수술부위 재발 (형식: "수술부위 재발여부 (0/1): 0")
-            surgery_rec_match = re.search(r'수술부위\s*재발여부\s*\(0/1\)\s*:\s*([01])', doc)
-            if surgery_rec_match:
-                if surgery_rec_match.group(1) == '1':
-                    surgery_site_recurrence += 1
-
-            # 재발 여부 - 원격 전이 (형식: "다른 장기로 전이 여부 (0/1): 0")
-            distant_match = re.search(r'다른\s*장기로\s*전이\s*여부\s*\(0/1\)\s*:\s*([01])', doc)
-            if distant_match:
-                if distant_match.group(1) == '1':
-                    distant_metastasis += 1
-
-            # 생존 여부 (형식: "이 질병으로 사망여부 (0:생존/ 1:사망/ 2:다른이유로사망): 0")
-            survival_match = re.search(r'이\s*질병으로\s*사망여부.*?:\s*([012])', doc)
-            if survival_match:
-                survival_total += 1
-                status = survival_match.group(1)
-                if status == '0':
-                    alive += 1
-                elif status == '1':
-                    dead_from_disease += 1
-                elif status == '2':
-                    dead_from_other += 1
-
-            # ===== 새로 추가된 19개 필드 추출 =====
-
-            # 암의 위치 (형식: "암의 위치 (Rt./Lt./Both): 2")
-            location_match = re.search(r'암의\s*위치\s*\(Rt\./Lt\./Both\)\s*:\s*([123])', doc)
-            if location_match:
-                location_map = {'1': 'Right', '2': 'Left', '3': 'Both'}
-                tumor_locations.append(location_map.get(location_match.group(1), location_match.group(1)))
-
-            # 암의 개수 (형식: "암의 개수 (single/multiple): 1")
-            number_match = re.search(r'암의\s*개수\s*\(single/multiple\)\s*:\s*([12])', doc)
-            if number_match:
-                tumor_numbers.append('Single' if number_match.group(1) == '1' else 'Multiple')
-
-            # HER2 IHC (형식: "HER2_IHC (0/+1/ +2/ +3): 1")
-            her2_ihc_match = re.search(r'HER2_IHC\s*\(0/\+1/\s*\+2/\s*\+3\)\s*:\s*([0123])', doc)
-            if her2_ihc_match:
-                ihc_map = {'0': 'IHC 0', '1': 'IHC 1+', '2': 'IHC 2+', '3': 'IHC 3+'}
-                her2_ihc_grades.append(ihc_map.get(her2_ihc_match.group(1), her2_ihc_match.group(1)))
-
-            # DCIS/LCIS 여부 (형식: "DCIS or LCIS 여부 (0: no DCIS/LCIS, 1: DCIS/LCIS present, EIC(-), 2: DCIS/LCIS present, EIC(+)), : 2")
-            dcis_lcis_match = re.search(r'DCIS\s*or\s*LCIS\s*여부.*?:\s*([012])', doc)
-            if dcis_lcis_match:
-                dcis_map = {'0': 'No DCIS/LCIS', '1': 'DCIS/LCIS present, EIC(-)', '2': 'DCIS/LCIS present, EIC(+)'}
-                dcis_lcis_statuses.append(dcis_map.get(dcis_lcis_match.group(1), dcis_lcis_match.group(1)))
-
-            # Mitotic Rate (형식: "HG_score 3 (Mitotic Rate) (1/2/3/4): 4")
-            mitotic_match = re.search(r'HG_score\s*3\s*\(Mitotic\s*Rate\)\s*\(1/2/3/4\)\s*:\s*([1234])', doc)
-            if mitotic_match:
-                mitotic_rates.append(f'Score {mitotic_match.group(1)}')
-
-            # ER Allred score (형식: "ER (Allred score)" 다음 줄에 "스코어 계산 필요: 100")
-            # 두 개의 "스코어 계산 필요"가 있으므로 ER과 PR을 구분해야 함
-            # ER 섹션에서 첫 번째 스코어
-            er_section = re.search(r'ER\s*\(-/\+\).*?(?=PR\s*\(-/\+\)|$)', doc, re.DOTALL)
-            if er_section:
-                er_allred_match = re.search(r'스코어\s*계산\s*필요\s*:\s*(\d+)', er_section.group(0))
-                if er_allred_match:
-                    try:
-                        er_allred_scores.append(int(er_allred_match.group(1)))
-                    except ValueError:
-                        pass
-
-            # PR Allred score (형식: PR 섹션의 "스코어 계산 필요: 50")
-            pr_section = re.search(r'PR\s*\(-/\+\).*?(?=KI-67|HER2|$)', doc, re.DOTALL)
-            if pr_section:
-                pr_allred_match = re.search(r'스코어\s*계산\s*필요\s*:\s*(\d+)', pr_section.group(0))
-                if pr_allred_match:
-                    try:
-                        pr_allred_scores.append(int(pr_allred_match.group(1)))
-                    except ValueError:
-                        pass
-
-            # 보조 호르몬 치료 (형식: "adjuvant Endocrine/Hormonal Tx: 2")
-            adj_endo_match = re.search(r'adjuvant\s*Endocrine/Hormonal\s*Tx\s*:\s*([012])', doc, re.IGNORECASE)
-            if adj_endo_match:
-                adjuvant_endocrine.append(adj_endo_match.group(1))
-
-            # 보조 방사선 치료 (형식: "adjuvant RTx : 0")
-            adj_rtx_match = re.search(r'adjuvant\s*RTx\s*:\s*([012])', doc, re.IGNORECASE)
-            if adj_rtx_match:
-                adjuvant_rtx.append(adj_rtx_match.group(1))
-
-            # 수술 전 항암 치료 (형식: "neoadjuvantCTx (0:무, 1:유): 0")
-            neoadj_ctx_match = re.search(r'neoadjuvantCTx\s*\(0:무,\s*1:유\)\s*:\s*([01])', doc, re.IGNORECASE)
-            if neoadj_ctx_match:
-                neoadjuvant_ctx.append('유' if neoadj_ctx_match.group(1) == '1' else '무')
-
-            # 수술 전 항암 반응 (형식: "neoadjuvantCTx response_MP (1, 2, 3, 4, 5, 6)- 기준 다름-보정필요: 0")
-            neoadj_response_match = re.search(r'neoadjuvantCTx\s*response_MP.*?:\s*([0-6])', doc, re.IGNORECASE)
-            if neoadj_response_match:
-                response = neoadj_response_match.group(1)
-                if response != '0':  # 0이 아닌 경우만 기록
-                    neoadjuvant_response.append(f'Response {response}')
-
-            # 수술 날짜 (형식: "수술연월일: 2015-10-23 00:00:00")
-            surgery_date_match = re.search(r'수술연월일\s*:\s*(\d{4}-\d{2}-\d{2})', doc)
-            if surgery_date_match:
-                try:
-                    surgery_dates.append(datetime.strptime(surgery_date_match.group(1), "%Y-%m-%d").date())
-                except Exception:
-                    pass
-
-            # 추적 관찰 날짜 (형식: "Last F/U 날짜 (연-월-일): 2020-09-25 00:00:00")
-            followup_date_match = re.search(r'Last\s*F/U\s*날짜.*?:\s*(\d{4}-\d{2}-\d{2})', doc, re.IGNORECASE)
-            if followup_date_match:
-                try:
-                    followup_dates.append(datetime.strptime(followup_date_match.group(1), "%Y-%m-%d").date())
-                except Exception:
-                    pass
-
-        # 통계 계산
-        stats['total_patients'] = len(stats['unique_records'])
-
-        # 나이 통계
-        if ages:
-            stats['age_stats'] = {
-                'mean': round(sum(ages) / len(ages), 1),
-                'min': min(ages),
-                'max': max(ages),
-                'count': len(ages)
+        # 레거시 호환 반환값 (단일 암종인 경우 기존 형식 유지)
+        if len(results) == 1:
+            cat = list(results.keys())[0]
+            r = results[cat]
+            return {
+                'total_patients': r['unique_count'],
+                'total_documents': r['total_docs'],
+                'hospital_name': "전체 병원",
+                'formatted_text': r['formatted_text'],
+                'category': cat,
+                'multi_category': False,
+                **r['accum'],
             }
 
-        # 종양 크기 통계
-        if tumor_sizes:
-            stats['tumor_size_stats'] = {
-                'mean': round(sum(tumor_sizes) / len(tumor_sizes), 1),
-                'min': min(tumor_sizes),
-                'max': max(tumor_sizes),
-                'count': len(tumor_sizes)
-            }
+        # 다중 암종
+        combined_text = "\n\n".join(all_texts)
+        return {
+            'total_patients': sum(r['unique_count'] for r in results.values()),
+            'total_documents': sum(r['total_docs'] for r in results.values()),
+            'hospital_name': "전체 병원",
+            'formatted_text': combined_text,
+            'categories': list(results.keys()),
+            'multi_category': True,
+            'per_category': {cat: r['formatted_text'] for cat, r in results.items()},
+        }
 
-        # ER 통계
-        if er_total > 0:
-            stats['er_stats'] = {
-                'positive': er_positive,
-                'total': er_total,
-                'percentage': round(er_positive / er_total * 100, 1)
-            }
-
-        # PR 통계
-        if pr_total > 0:
-            stats['pr_stats'] = {
-                'positive': pr_positive,
-                'total': pr_total,
-                'percentage': round(pr_positive / pr_total * 100, 1)
-            }
-
-        # HER2 통계
-        if her2_total > 0:
-            stats['her2_stats'] = {
-                'positive': her2_positive,
-                'total': her2_total,
-                'percentage': round(her2_positive / her2_total * 100, 1)
-            }
-
-        # Stage 분포
-        if stages:
-            stage_counter = Counter(stages)
-            stats['stage_distribution'] = dict(stage_counter)
-
-        # Nuclear Grade 분포
-        if ng_grades:
-            ng_counter = Counter(ng_grades)
-            stats['ng_distribution'] = dict(ng_counter)
-
-        # Histologic Grade 분포
-        if hg_grades:
-            hg_counter = Counter(hg_grades)
-            stats['hg_distribution'] = dict(hg_counter)
-
-        # Ki-67 통계
-        if ki67_values:
-            stats['ki67_stats'] = {
-                'mean': round(sum(ki67_values) / len(ki67_values), 1),
-                'min': min(ki67_values),
-                'max': max(ki67_values),
-                'count': len(ki67_values)
-            }
-            thresholds = []
-            for th in KI67_THRESHOLDS:
-                above_count = sum(1 for v in ki67_values if v >= th)
-                thresholds.append({
-                    'threshold': th,
-                    'count': above_count,
-                    'percentage': round(above_count / len(ki67_values) * 100, 1)
-                })
-            stats['ki67_thresholds'] = thresholds
-
-        # 림프절 전이 통계
-        if lymph_node_total > 0:
-            stats['lymph_node_stats'] = {
-                'positive': lymph_node_positive,
-                'total': lymph_node_total,
-                'percentage': round(lymph_node_positive / lymph_node_total * 100, 1)
-            }
-            if lymph_node_counts:
-                stats['lymph_node_stats']['mean_count'] = round(sum(lymph_node_counts) / len(lymph_node_counts), 1)
-                stats['lymph_node_stats']['max_count'] = max(lymph_node_counts)
-
-        # TNM 분류 통계
-        if t_categories or n_categories or m_categories:
-            stats['tnm_stats'] = {}
-            if t_categories:
-                stats['tnm_stats']['T'] = dict(Counter(t_categories))
-            if n_categories:
-                stats['tnm_stats']['N'] = dict(Counter(n_categories))
-            if m_categories:
-                stats['tnm_stats']['M'] = dict(Counter(m_categories))
-
-        # 조직학적 타입 분포
-        if histologic_types:
-            histologic_counter = Counter(histologic_types)
-            stats['histologic_type_distribution'] = dict(histologic_counter)
-
-        # 수술 방법 분포
-        if surgery_types:
-            surgery_counter = Counter(surgery_types)
-            stats['surgery_type_distribution'] = dict(surgery_counter)
-
-        # 재발 통계
-        if recurrence_total > 0:
-            total_recurrence = axillary_recurrence + surgery_site_recurrence + distant_metastasis
-            stats['recurrence_stats'] = {
-                'axillary_ln': axillary_recurrence,
-                'surgery_site': surgery_site_recurrence,
-                'distant_metastasis': distant_metastasis,
-                'total_with_recurrence': total_recurrence,
-                'total_patients': recurrence_total,
-                'recurrence_rate': round(total_recurrence / recurrence_total * 100, 1) if total_recurrence > 0 else 0
-            }
-
-        # 생존 통계
-        if survival_total > 0:
-            stats['survival_stats'] = {
-                'alive': alive,
-                'dead_from_disease': dead_from_disease,
-                'dead_from_other': dead_from_other,
-                'total': survival_total,
-                'survival_rate': round(alive / survival_total * 100, 1)
-            }
-
-        # 병원별 건수
-        if hospital_counter:
-            stats['hospital_counts'] = dict(hospital_counter)
-
-        # 수술 연도 분포
-        if surgery_year_counter:
-            stats['surgery_year_distribution'] = dict(sorted(surgery_year_counter.items()))
-
-        # 바이오마커 조합 통계
-        if biomarker_combo_counter:
-            total = len(stats['unique_records']) or len(documents)
-            combos = {}
-            for key, val in biomarker_combo_counter.items():
-                combos[key] = {
-                    'count': val,
-                    'percentage': round(val / total * 100, 1) if total else 0
-                }
-            stats['biomarker_combinations'] = combos
-
-        # Stage x NG/HG 교차
-        if stage_ng_counter:
-            stats['stage_ng_distribution'] = {f"{k[0]} | {k[1]}": v for k, v in stage_ng_counter.items()}
-        if stage_hg_counter:
-            stats['stage_hg_distribution'] = {f"{k[0]} | {k[1]}": v for k, v in stage_hg_counter.items()}
-
-        # ===== 새로 추가된 필드 통계 =====
-
-        # 암의 위치 분포
-        if tumor_locations:
-            stats['tumor_location_distribution'] = dict(Counter(tumor_locations))
-
-        # 암의 개수 분포
-        if tumor_numbers:
-            stats['tumor_number_distribution'] = dict(Counter(tumor_numbers))
-
-        # HER2 IHC 분포
-        if her2_ihc_grades:
-            stats['her2_ihc_distribution'] = dict(Counter(her2_ihc_grades))
-
-        # DCIS/LCIS 분포
-        if dcis_lcis_statuses:
-            stats['dcis_lcis_distribution'] = dict(Counter(dcis_lcis_statuses))
-
-        # Mitotic Rate 분포
-        if mitotic_rates:
-            stats['mitotic_rate_distribution'] = dict(Counter(mitotic_rates))
-
-        # ER Allred score 통계
-        if er_allred_scores:
-            stats['er_allred_stats'] = {
-                'mean': round(sum(er_allred_scores) / len(er_allred_scores), 1),
-                'min': min(er_allred_scores),
-                'max': max(er_allred_scores),
-                'count': len(er_allred_scores)
-            }
-
-        # PR Allred score 통계
-        if pr_allred_scores:
-            stats['pr_allred_stats'] = {
-                'mean': round(sum(pr_allred_scores) / len(pr_allred_scores), 1),
-                'min': min(pr_allred_scores),
-                'max': max(pr_allred_scores),
-                'count': len(pr_allred_scores)
-            }
-
-        # 보조 호르몬 치료 분포
-        if adjuvant_endocrine:
-            endo_counter = Counter(adjuvant_endocrine)
-            stats['adjuvant_endocrine_stats'] = {
-                'no_treatment': endo_counter.get('0', 0),
-                'treatment_yes': endo_counter.get('1', 0) + endo_counter.get('2', 0),
-                'total': len(adjuvant_endocrine)
-            }
-
-        # 보조 방사선 치료 분포
-        if adjuvant_rtx:
-            rtx_counter = Counter(adjuvant_rtx)
-            stats['adjuvant_rtx_stats'] = {
-                'no_treatment': rtx_counter.get('0', 0),
-                'treatment_yes': rtx_counter.get('1', 0) + rtx_counter.get('2', 0),
-                'total': len(adjuvant_rtx)
-            }
-
-        # 수술 전 항암 치료 분포
-        if neoadjuvant_ctx:
-            stats['neoadjuvant_ctx_stats'] = dict(Counter(neoadjuvant_ctx))
-
-        # 수술 전 항암 반응 분포
-        if neoadjuvant_response:
-            stats['neoadjuvant_response_distribution'] = dict(Counter(neoadjuvant_response))
-
-        # 추적 관찰 기간 통계
-        if surgery_dates and followup_dates:
-            followup_periods = []
-            for surg_date, fu_date in zip(surgery_dates, followup_dates):
-                if surg_date and fu_date and fu_date > surg_date:
-                    period_days = (fu_date - surg_date).days
-                    followup_periods.append(period_days)
-
-            if followup_periods:
-                stats['followup_period_stats'] = {
-                    'mean_days': round(sum(followup_periods) / len(followup_periods), 1),
-                    'mean_months': round(sum(followup_periods) / len(followup_periods) / 30.44, 1),
-                    'mean_years': round(sum(followup_periods) / len(followup_periods) / 365.25, 1),
-                    'min_days': min(followup_periods),
-                    'max_days': max(followup_periods),
-                    'count': len(followup_periods)
-                }
-
-        logger.info(f"  ✅ 통계 계산 완료: {stats['total_patients']}명")
-        return stats
+    def format_statistics_for_llm(self, stats: dict) -> str:
+        """통계 딕셔너리를 LLM용 텍스트로 변환"""
+        return stats.get('formatted_text', '통계 데이터 없음')
 
     def _get_hospital_name(self, hospital_code: str) -> str:
-        """병원 코드를 병원명으로 변환"""
-        hospital_map = {
-            "01": "세브란스",
-            "02": "계명대",
-            "03": "분당차",
-            "04": "강남세브란스",
-            "05": "강남차",
-            "06": "단국대",
-            "07": "이화여대"
-        }
-        return hospital_map.get(hospital_code, f"병원 {hospital_code}")
+        """병원 코드 → 이름 (유방암 기본값)"""
+        return _get_hospital_name(hospital_code, 'breast')
 
     def get_dataset_metadata(self, all_docs: list) -> dict:
-        """
-        CRF 데이터셋의 메타 정보 반환
-
-        Args:
-            all_docs: 전체 CRF 문서 리스트
-
-        Returns:
-            메타정보 딕셔너리 (병원 목록, 데이터 수집 기간, 필드 정보 등)
-        """
+        """CRF 데이터셋 메타 정보 반환"""
         metadata = {
-            "total_records": 0,
+            "total_records": len(all_docs),
             "hospitals": {},
             "data_collection_period": {},
             "available_fields": [],
             "record_id_range": {}
         }
-
-        if not all_docs:
-            return metadata
 
         hospital_counts = {}
         all_dates = []
@@ -682,43 +1113,32 @@ class CRFStatisticsMixin:
             if not isinstance(fields, dict):
                 fields = {}
 
-            # 병원별 집계
             hospital = doc.get("hospital", "Unknown")
             hospital_counts[hospital] = hospital_counts.get(hospital, 0) + 1
 
-            # Record ID 수집
             record_id = doc.get("record_id")
             if record_id:
                 record_ids.append(record_id)
 
-            # 수술 날짜 수집
-            surgery_date = doc.get("수술연월일") or doc.get("surgery_date") or fields.get("수술연월일") or fields.get("surgery_date")
+            surgery_date = (doc.get("수술연월일") or doc.get("surgery_date")
+                            or fields.get("수술연월일") or fields.get("surgery_date"))
             if surgery_date:
                 try:
                     if isinstance(surgery_date, str):
-                        # YYYY-MM-DD 형식 파싱
-                        date_obj = datetime.strptime(surgery_date, "%Y-%m-%d")
+                        date_obj = datetime.strptime(surgery_date[:10], "%Y-%m-%d")
                         all_dates.append(date_obj)
-                except:
-                    pass
+                except: pass
 
-            # 필드명 수집
             for key in doc.keys():
                 if key not in ["hospital", "record_id", "sheet", "path_no"]:
                     field_set.add(key)
-            # fields 딕셔너리 내 컬럼도 포함
             for key in fields.keys():
                 field_set.add(key)
 
-        # 병원 정보 정리 (코드 → 이름 변환)
         for hospital_code, count in hospital_counts.items():
-            hospital_name = self._get_hospital_name(hospital_code)
-            metadata["hospitals"][hospital_name] = {
-                "code": hospital_code,
-                "count": count
-            }
+            hospital_name = _get_hospital_name(hospital_code)
+            metadata["hospitals"][hospital_name] = {"code": hospital_code, "count": count}
 
-        # 데이터 수집 기간
         if all_dates:
             metadata["data_collection_period"] = {
                 "earliest": min(all_dates).strftime("%Y-%m-%d"),
@@ -726,7 +1146,6 @@ class CRFStatisticsMixin:
                 "total_days": (max(all_dates) - min(all_dates)).days
             }
 
-        # Record ID 범위
         if record_ids:
             metadata["record_id_range"] = {
                 "first": min(record_ids),
@@ -734,34 +1153,20 @@ class CRFStatisticsMixin:
                 "total": len(set(record_ids))
             }
 
-        # 사용 가능한 필드 목록 (정렬)
         metadata["available_fields"] = sorted(list(field_set))
-        metadata["total_records"] = len(all_docs)
-
         return metadata
 
     def format_metadata_for_llm(self, metadata: dict) -> str:
-        """
-        메타데이터를 LLM이 읽기 쉬운 텍스트로 포맷팅
+        """메타데이터 → LLM용 텍스트"""
+        lines = ["=== CRF 데이터셋 메타 정보 (8개 암종 통합) ===",
+                 f"\n총 레코드 수: {metadata.get('total_records', 0)}개"]
 
-        Args:
-            metadata: get_dataset_metadata()의 반환값
-
-        Returns:
-            포맷팅된 텍스트
-        """
-        lines = []
-        lines.append("=== CRF Breast 데이터셋 메타 정보 ===")
-        lines.append(f"\n총 레코드 수: {metadata.get('total_records', 0)}개")
-
-        # 병원 정보
         hospitals = metadata.get('hospitals', {})
         if hospitals:
             lines.append(f"\n수집 병원 목록 ({len(hospitals)}개):")
             for hospital_name, info in sorted(hospitals.items()):
                 lines.append(f"  - {hospital_name} (코드: {info['code']}): {info['count']}개 레코드")
 
-        # 데이터 수집 기간
         period = metadata.get('data_collection_period', {})
         if period:
             lines.append(f"\n데이터 수집 기간:")
@@ -769,7 +1174,6 @@ class CRFStatisticsMixin:
             lines.append(f"  - 가장 최신 수술일: {period.get('latest', 'N/A')}")
             lines.append(f"  - 총 수집 기간: 약 {period.get('total_days', 0)}일")
 
-        # Record ID 범위
         record_range = metadata.get('record_id_range', {})
         if record_range:
             lines.append(f"\nRecord ID 범위:")
@@ -777,255 +1181,13 @@ class CRFStatisticsMixin:
             lines.append(f"  - 마지막: {record_range.get('last', 'N/A')}")
             lines.append(f"  - 고유 환자 수: {record_range.get('total', 0)}명")
 
-        # 사용 가능한 필드 목록
         fields = metadata.get('available_fields', [])
         if fields:
-            lines.append(f"\n사용 가능한 데이터 필드 ({len(fields)}개):")
-            # 필드가 너무 많으면 상위 30개만 표시
             display_fields = fields[:30]
+            lines.append(f"\n사용 가능한 데이터 필드 ({len(fields)}개, 상위 30개):")
             for field in display_fields:
                 lines.append(f"  - {field}")
             if len(fields) > 30:
-                lines.append(f"  ...총 {len(fields)}개 필드 중 30개만 표시")
+                lines.append(f"  ...외 {len(fields)-30}개")
 
         return "\n".join(lines)
-
-    def format_statistics_for_llm(self, stats: dict) -> str:
-        """
-        통계 데이터를 LLM이 읽기 쉬운 텍스트로 포맷팅
-
-        Args:
-            stats: calculate_crf_statistics()의 반환값
-
-        Returns:
-            포맷팅된 텍스트
-        """
-        lines = []
-        lines.append(f"=== {stats['hospital_name']} CRF 데이터 통계 ===")
-        lines.append(f"\n총 환자 수: {stats['total_patients']}명")
-        lines.append(f"총 문서 수: {stats['total_documents']}개")
-
-        if stats['age_stats']:
-            age = stats['age_stats']
-            lines.append(f"\n진단 시 나이:")
-            lines.append(f"  - 평균: {age['mean']}세")
-            lines.append(f"  - 범위: {age['min']}세 ~ {age['max']}세")
-            lines.append(f"  - 데이터 수: {age['count']}명")
-
-        if stats['tumor_size_stats']:
-            size = stats['tumor_size_stats']
-            lines.append(f"\n암 크기 (장경):")
-            lines.append(f"  - 평균: {size['mean']} mm")
-            lines.append(f"  - 범위: {size['min']} mm ~ {size['max']} mm")
-            lines.append(f"  - 데이터 수: {size['count']}명")
-
-        if stats['er_stats']:
-            er = stats['er_stats']
-            lines.append(f"\nER (Estrogen Receptor):")
-            lines.append(f"  - Positive: {er['positive']}명 ({er['percentage']}%)")
-            lines.append(f"  - Negative: {er['total'] - er['positive']}명")
-            lines.append(f"  - 총 데이터: {er['total']}명")
-
-        if stats['pr_stats']:
-            pr = stats['pr_stats']
-            lines.append(f"\nPR (Progesterone Receptor):")
-            lines.append(f"  - Positive: {pr['positive']}명 ({pr['percentage']}%)")
-            lines.append(f"  - Negative: {pr['total'] - pr['positive']}명")
-            lines.append(f"  - 총 데이터: {pr['total']}명")
-
-        if stats['her2_stats']:
-            her2 = stats['her2_stats']
-            lines.append(f"\nHER2:")
-            lines.append(f"  - Positive: {her2['positive']}명 ({her2['percentage']}%)")
-            lines.append(f"  - Negative: {her2['total'] - her2['positive']}명")
-            lines.append(f"  - 총 데이터: {her2['total']}명")
-
-        if stats['stage_distribution']:
-            lines.append(f"\nAJCC Stage 분포:")
-            for stage, count in sorted(stats['stage_distribution'].items()):
-                lines.append(f"  - {stage}: {count}명")
-
-        if stats['ng_distribution']:
-            lines.append(f"\nNuclear Grade (NG) 분포:")
-            for grade, count in sorted(stats['ng_distribution'].items()):
-                lines.append(f"  - {grade}: {count}명")
-
-        if stats['hg_distribution']:
-            lines.append(f"\nHistologic Grade (HG) 분포:")
-            for grade, count in sorted(stats['hg_distribution'].items()):
-                lines.append(f"  - {grade}: {count}명")
-
-        if stats['ki67_stats']:
-            ki67 = stats['ki67_stats']
-            lines.append(f"\nKi-67 증식 지표:")
-            lines.append(f"  - 평균: {ki67['mean']}%")
-            lines.append(f"  - 범위: {ki67['min']}% ~ {ki67['max']}%")
-            lines.append(f"  - 데이터 수: {ki67['count']}명")
-        if stats['ki67_thresholds']:
-            lines.append(f"\nKi-67 임계값별 통계:")
-            for item in stats['ki67_thresholds']:
-                lines.append(f"  - {item['threshold']}% 이상: {item['count']}명 ({item['percentage']}%)")
-
-        if stats['lymph_node_stats']:
-            ln = stats['lymph_node_stats']
-            lines.append(f"\n림프절 전이:")
-            lines.append(f"  - 전이 있음: {ln['positive']}명 ({ln['percentage']}%)")
-            lines.append(f"  - 전이 없음: {ln['total'] - ln['positive']}명")
-            lines.append(f"  - 총 데이터: {ln['total']}명")
-            if 'mean_count' in ln:
-                lines.append(f"  - 평균 전이 개수: {ln['mean_count']}개 (최대: {ln['max_count']}개)")
-
-        if stats['tnm_stats']:
-            tnm = stats['tnm_stats']
-            if 'T' in tnm:
-                lines.append(f"\nT category (종양 크기):")
-                for cat, count in sorted(tnm['T'].items()):
-                    lines.append(f"  - {cat}: {count}명")
-            if 'N' in tnm:
-                lines.append(f"\nN category (림프절):")
-                for cat, count in sorted(tnm['N'].items()):
-                    lines.append(f"  - {cat}: {count}명")
-            if 'M' in tnm:
-                lines.append(f"\nM category (원격 전이):")
-                for cat, count in sorted(tnm['M'].items()):
-                    lines.append(f"  - {cat}: {count}명")
-
-        if stats['histologic_type_distribution']:
-            lines.append(f"\n조직학적 타입:")
-            for htype, count in sorted(stats['histologic_type_distribution'].items()):
-                lines.append(f"  - {htype}: {count}명")
-
-        if stats['surgery_type_distribution']:
-            lines.append(f"\n수술 방법:")
-            for stype, count in sorted(stats['surgery_type_distribution'].items()):
-                lines.append(f"  - {stype}: {count}명")
-
-        if stats.get('biomarker_combinations'):
-            lines.append(f"\n바이오마커 조합 통계:")
-            combos = stats['biomarker_combinations']
-            for label, data in combos.items():
-                lines.append(f"  - {label}: {data['count']}명 ({data['percentage']}%)")
-
-        if stats.get('hospital_counts'):
-            lines.append(f"\n병원별 건수:")
-            for hosp, count in sorted(stats['hospital_counts'].items()):
-                lines.append(f"  - 병원 {hosp}: {count}명")
-
-        if stats.get('surgery_year_distribution'):
-            lines.append(f"\n수술 연도 분포:")
-            for year, count in sorted(stats['surgery_year_distribution'].items()):
-                lines.append(f"  - {year}: {count}명")
-
-        if stats.get('stage_ng_distribution'):
-            lines.append(f"\nStage x NG 분포:")
-            for label, count in sorted(stats['stage_ng_distribution'].items()):
-                lines.append(f"  - {label}: {count}명")
-
-        if stats.get('stage_hg_distribution'):
-            lines.append(f"\nStage x HG 분포:")
-            for label, count in sorted(stats['stage_hg_distribution'].items()):
-                lines.append(f"  - {label}: {count}명")
-
-        if stats['recurrence_stats']:
-            rec = stats['recurrence_stats']
-            lines.append(f"\n재발 현황:")
-            lines.append(f"  - Axillary LN 재발: {rec['axillary_ln']}명")
-            lines.append(f"  - 수술 부위 재발: {rec['surgery_site']}명")
-            lines.append(f"  - 원격 전이: {rec['distant_metastasis']}명")
-            lines.append(f"  - 총 재발 환자: {rec['total_with_recurrence']}명 ({rec['recurrence_rate']}%)")
-
-        if stats['survival_stats']:
-            surv = stats['survival_stats']
-            lines.append(f"\n생존 현황:")
-            lines.append(f"  - 생존: {surv['alive']}명 ({surv['survival_rate']}%)")
-            lines.append(f"  - 질병으로 사망: {surv['dead_from_disease']}명")
-            lines.append(f"  - 기타 사망: {surv['dead_from_other']}명")
-            lines.append(f"  - 총 데이터: {surv['total']}명")
-
-        # ===== 새로 추가된 필드 통계 포맷팅 =====
-
-        # 암의 위치 분포
-        if stats.get('tumor_location_distribution'):
-            lines.append(f"\n암의 위치:")
-            for location, count in sorted(stats['tumor_location_distribution'].items()):
-                lines.append(f"  - {location}: {count}명")
-
-        # 암의 개수 분포
-        if stats.get('tumor_number_distribution'):
-            lines.append(f"\n암의 개수:")
-            for number, count in sorted(stats['tumor_number_distribution'].items()):
-                lines.append(f"  - {number}: {count}명")
-
-        # HER2 IHC 분포
-        if stats.get('her2_ihc_distribution'):
-            lines.append(f"\nHER2 IHC 등급:")
-            for grade, count in sorted(stats['her2_ihc_distribution'].items()):
-                lines.append(f"  - {grade}: {count}명")
-
-        # DCIS/LCIS 분포
-        if stats.get('dcis_lcis_distribution'):
-            lines.append(f"\nDCIS/LCIS 여부:")
-            for status, count in sorted(stats['dcis_lcis_distribution'].items()):
-                lines.append(f"  - {status}: {count}명")
-
-        # Mitotic Rate 분포
-        if stats.get('mitotic_rate_distribution'):
-            lines.append(f"\nMitotic Rate (HG score 3):")
-            for rate, count in sorted(stats['mitotic_rate_distribution'].items()):
-                lines.append(f"  - {rate}: {count}명")
-
-        # ER Allred score
-        if stats.get('er_allred_stats'):
-            er_allred = stats['er_allred_stats']
-            lines.append(f"\nER Allred Score:")
-            lines.append(f"  - 평균: {er_allred['mean']}")
-            lines.append(f"  - 범위: {er_allred['min']} ~ {er_allred['max']}")
-            lines.append(f"  - 데이터 수: {er_allred['count']}명")
-
-        # PR Allred score
-        if stats.get('pr_allred_stats'):
-            pr_allred = stats['pr_allred_stats']
-            lines.append(f"\nPR Allred Score:")
-            lines.append(f"  - 평균: {pr_allred['mean']}")
-            lines.append(f"  - 범위: {pr_allred['min']} ~ {pr_allred['max']}")
-            lines.append(f"  - 데이터 수: {pr_allred['count']}명")
-
-        # 보조 호르몬 치료
-        if stats.get('adjuvant_endocrine_stats'):
-            endo = stats['adjuvant_endocrine_stats']
-            lines.append(f"\n보조 호르몬 치료:")
-            lines.append(f"  - 치료 받음: {endo['treatment_yes']}명")
-            lines.append(f"  - 치료 안 받음: {endo['no_treatment']}명")
-            lines.append(f"  - 총 데이터: {endo['total']}명")
-
-        # 보조 방사선 치료
-        if stats.get('adjuvant_rtx_stats'):
-            rtx = stats['adjuvant_rtx_stats']
-            lines.append(f"\n보조 방사선 치료:")
-            lines.append(f"  - 치료 받음: {rtx['treatment_yes']}명")
-            lines.append(f"  - 치료 안 받음: {rtx['no_treatment']}명")
-            lines.append(f"  - 총 데이터: {rtx['total']}명")
-
-        # 수술 전 항암 치료
-        if stats.get('neoadjuvant_ctx_stats'):
-            lines.append(f"\n수술 전 항암 치료:")
-            for status, count in sorted(stats['neoadjuvant_ctx_stats'].items()):
-                lines.append(f"  - {status}: {count}명")
-
-        # 수술 전 항암 반응
-        if stats.get('neoadjuvant_response_distribution'):
-            lines.append(f"\n수술 전 항암 치료 반응:")
-            for response, count in sorted(stats['neoadjuvant_response_distribution'].items()):
-                lines.append(f"  - {response}: {count}명")
-
-        # 추적 관찰 기간
-        if stats.get('followup_period_stats'):
-            fu = stats['followup_period_stats']
-            lines.append(f"\n추적 관찰 기간:")
-            lines.append(f"  - 평균: {fu['mean_years']}년 ({fu['mean_months']}개월)")
-            lines.append(f"  - 범위: {round(fu['min_days']/365.25, 1)}년 ~ {round(fu['max_days']/365.25, 1)}년")
-            lines.append(f"  - 데이터 수: {fu['count']}명")
-
-        text = "\n".join(lines)
-
-        return text

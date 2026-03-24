@@ -1,298 +1,224 @@
-# 🤖 Multi-Source RAG Chatbot
+# Redmine RAG Chatbot
 
-An intelligent RAG (Retrieval-Augmented Generation) chatbot system that integrates multiple data sources with automatic routing capabilities.
+A RAG (Retrieval-Augmented Generation) chatbot that searches Redmine issue history and structured clinical/domain data, built with Flask + ChromaDB + Gemini.
 
-## 🌟 Key Features
+## Features
 
-### 🎯 Intelligent Multi-Source Routing
-- **Automatic Database Selection**: Routes queries to the appropriate data source based on content analysis
-- **Dual Routing Strategy**:
-  - Fast keyword-based routing for explicit queries
-  - Vector similarity comparison for ambiguous questions
-- **Context-Aware**: Maintains conversation context for follow-up questions
+- **Dual-source routing**: Automatically routes queries between Redmine issues and secondary structured data (e.g., clinical records) using keyword detection + vector similarity comparison
+- **Hybrid search**: Dense vector search + BM25 (Redmine only), merged with RRF (Reciprocal Rank Fusion)
+- **Multi-turn conversation**: Flask server-side session (filesystem) with ChromaDB-backed conversation history
+- **Image attachment support**: Proxies Redmine image attachments with overkill guard (prevents hallucinating metrics from image-only issues)
+- **CRF statistics**: Python code execution via Gemini for aggregated statistics and chart generation
+- **Diagram generation**: PaperBanana v2 integration (SSE proxy)
+- **Observability**: Langfuse tracing for embedding / retrieval / LLM generation spans
 
-### 💬 Advanced Conversation Management
-- **Multi-turn Dialogue**: Remembers conversation history for contextual responses
-- **Session Management**: Per-user conversation tracking and history
-- **Vector-based History Search**: Retrieves relevant past conversations to improve answers
+## Tech Stack
 
-### 📊 Data Source Integration
-- **Multiple Database Support**: Connect multiple ChromaDB collections
-- **Domain-Specific Routing**: Automatic selection based on query content
-- **Structured Data Support**: Handle metadata queries and statistical operations
-- **Extensible Architecture**: Easy to add new data sources with minimal code changes
-- **Direct Lookup**: Support for ID-based direct retrieval (e.g., issue numbers, record IDs)
+| Component | Library |
+|-----------|---------|
+| Backend | Flask 3.0.0 + Gunicorn 21.2.0 |
+| LLM | Google Gemini 2.5 Pro (`google-genai`) |
+| Embedding | `models/gemini-embedding-001` |
+| Vector DB | ChromaDB 1.3.5 |
+| Hybrid Search | `rank-bm25` + RRF |
+| Session | `flask-session` (filesystem) |
+| Observability | Langfuse (optional) |
 
-### 📈 Statistical Analysis & Visualization
-- **Automated Statistics**: Python-based calculation for numerical queries
-- **Chart Generation**: Automatic visualization using Gemini Code Execution API
-- **Multi-field Filtering**: Complex query support with multiple conditions
-- **Metadata Queries**: Direct field queries without semantic search
-
-## 🏗️ Architecture
-
-```
-                    ┌─────────────────┐
-                    │   User Query    │
-                    └────────┬────────┘
-                             │
-         ┌───────────────────┼───────────────────┐
-         │                   │                   │
-    ┌────▼────┐         ┌───▼────┐        ┌────▼────┐
-    │Metadata │         │General │        │Statistics│
-    │ Query?  │         │ Chat?  │        │ Query?   │
-    └────┬────┘         └───┬────┘        └────┬─────┘
-         │                  │                   │
-         └──────────────────┼───────────────────┘
-                            │
-              ┌─────────────▼──────────────┐
-              │   Intelligent Router       │
-              │ (Keyword + Vector Compare) │
-              └─────────────┬──────────────┘
-                            │
-                ┌───────────┴───────────┐
-                │                       │
-         ┌──────▼──────┐        ┌──────▼──────┐
-         │  Database 1 │        │  Database 2 │
-         │  (Vector)   │        │  (Vector)   │
-         └──────┬──────┘        └──────┬──────┘
-                │                       │
-                └───────────┬───────────┘
-                            │
-              ┌─────────────▼──────────────┐
-              │  Context Construction      │
-              │  + History Integration     │
-              └─────────────┬──────────────┘
-                            │
-              ┌─────────────▼──────────────┐
-              │      Gemini LLM            │
-              │  (Answer Generation)       │
-              └─────────────┬──────────────┘
-                            │
-              ┌─────────────▼──────────────┐
-              │   Response + Sources       │
-              └────────────────────────────┘
-```
-
-## 🛠️ Tech Stack
-
-- **Backend**: Flask (Python 3.11)
-- **Vector Database**: ChromaDB (with HNSW indexing)
-- **LLM**:
-  - Google Gemini 2.5 Pro (Q&A)
-  - Google Gemini Flash 3 (Code Execution & Charts)
-- **Embedding**:
-  - Gemini Embedding 001 (default)
-  - Sentence Transformers (alternative)
-- **Server**: Gunicorn (multi-worker)
-- **Containerization**: Docker & Docker Compose
-- **Orchestration**: Kubernetes ready
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 .
+├── docker-compose.yml
+├── .env.example
 ├── chatbot/
-│   ├── src/
-│   │   ├── app.py                  # Flask application & routing logic
-│   │   ├── rag_engine.py          # Core RAG engine
-│   │   ├── prompts.py             # Prompt templates
-│   │   ├── config/
-│   │   │   ├── constants.py       # Configuration constants
-│   │   │   ├── patterns.py        # Regex patterns for routing
-│   │   │   └── gunicorn_config.py # Gunicorn settings
-│   │   └── utils/
-│   │       ├── rag_utils.py           # RAG helper functions
-│   │       ├── rag_engine_helpers.py  # Query processing helpers
-│   │       └── crf_statistics.py      # Statistical analysis module
+│   ├── Dockerfile
+│   ├── requirement.txt
 │   ├── templates/
-│   │   └── chat.html              # Web UI
-│   ├── Dockerfile                 # Docker image definition
-│   └── requirement.txt           # Python dependencies
-├── docker-compose.yml            # Docker Compose configuration
-└── README.md                     # This file
+│   │   └── chat.html
+│   └── src/
+│       ├── app.py                    # Flask app, routing, session
+│       ├── rag_engine.py             # RedmineRAG class, query() orchestration
+│       ├── prompts.py                # Prompt templates (redmine / crf / general)
+│       ├── config/
+│       │   ├── constants.py          # Thresholds, staff lists, BM25 config
+│       │   ├── patterns.py           # Regex patterns for routing
+│       │   ├── diagram_config.py     # PaperBanana config
+│       │   └── gunicorn_config.py
+│       └── utils/
+│           ├── rag_utils.py          # Embedding, search query builder, context formatter
+│           ├── rag_engine_helpers.py # Search, cutoff, post-process, answer generation
+│           ├── crf_statistics.py     # Aggregated statistics for structured data
+│           └── paperbanana_client.py # PaperBanana SSE client
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
-### Prerequisites
+### 1. Clone & configure
 
-- Docker & Docker Compose
-- Google Gemini API Key ([Get one here](https://makersuite.google.com/app/apikey))
-- Vector database (ChromaDB) with your data
-
-### Installation
-
-1. **Clone the repository**
 ```bash
-git clone https://github.com/yourusername/multi-source-rag-chatbot.git
-cd multi-source-rag-chatbot
-```
+git clone https://github.com/yourusername/redmine-rag-chatbot.git
+cd redmine-rag-chatbot
 
-2. **Set up environment variables**
-```bash
 cp .env.example .env
-# Edit .env and add your GEMINI_API_KEY
+# Edit .env — fill in GEMINI_API_KEY, REDMINE_URL, REDMINE_API_KEY
 ```
 
-3. **Prepare your vector database**
-```bash
-# Place your ChromaDB data in ./vectordb/
-mkdir -p vectordb/chroma_db
-# Copy your ChromaDB files here
+### 2. Prepare Vector DB
+
+Place your ChromaDB data under `./vectordb/`:
+
+```
+vectordb/
+├── chroma_db_v0.2.0/        # Redmine issues collection
+├── crf_data/
+│   └── chroma_db_v0.3.0/    # Secondary structured data (optional)
+└── conversation_db/          # Auto-created on first run
 ```
 
-4. **Run with Docker Compose**
-```bash
-docker-compose up -d
-```
+You need to build the ChromaDB collections from your data source. See the [Vector DB section](#vector-db-setup) below.
 
-5. **Access the chatbot**
-```
-http://localhost:8080
-```
-
-### Local Development
+### 3. Run with Docker Compose
 
 ```bash
+docker compose up -d
+# Access at http://localhost:8080
+```
+
+### 4. Local development
+
+```bash
+pip install -r chatbot/requirement.txt
+
+export GEMINI_API_KEY=your_key
+export VECTORDB_PATH=./vectordb/chroma_db_v0.2.0
+export COLLECTION_NAME=redmine_issues_raw_v4
+export REDMINE_URL=https://your-redmine.example.com
+export REDMINE_API_KEY=your_redmine_api_key
+
 cd chatbot
-
-# Install dependencies
-pip install -r requirement.txt
-
-# Set environment variables
-export GEMINI_API_KEY=your_api_key_here
-export VECTORDB_PATH=/path/to/vectordb/chroma_db
-export COLLECTION_NAME=your_collection_name
-export PORT=8080
-
-# Run the application
-python src/app.py
-
-# Or with Gunicorn
-gunicorn --config src/config/gunicorn_config.py src.app:app
+gunicorn --config src/config/gunicorn_config.py "src.app:app"
 ```
 
-## 📡 API Endpoints
+## Environment Variables
 
-### `POST /chat`
-Main chatbot endpoint with automatic routing
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GEMINI_API_KEY` | Yes | Google Gemini API key |
+| `REDMINE_URL` | Yes | Redmine instance URL |
+| `REDMINE_API_KEY` | Yes | Redmine API key (for image proxy) |
+| `SECRET_KEY` | Yes | Flask session secret (change in production) |
+| `VECTORDB_PATH` | No | Path to Redmine ChromaDB (default: `/vectordb/chroma_db_v0.2.0`) |
+| `COLLECTION_NAME` | No | Redmine collection name (default: `redmine_issues_raw_v4`) |
+| `CRF_VECTORDB_PATH` | No | Path to secondary ChromaDB (optional) |
+| `CRF_COLLECTION_NAME` | No | Secondary collection name (optional) |
+| `PORT` | No | Server port (default: `8080`) |
+| `GUNICORN_WORKERS` | No | Worker count (default: `cpu*2+1`) |
+| `PAPERBANANA_BASE_URL` | No | PaperBanana service URL (diagram feature) |
+| `LANGFUSE_HOST` | No | Langfuse server URL (observability) |
+| `LANGFUSE_PUBLIC_KEY` | No | Langfuse public key |
+| `LANGFUSE_SECRET_KEY` | No | Langfuse secret key |
 
-**Request:**
-```json
-{
-  "question": "What is the latest model performance?",
-  "user_name": "user123",
-  "top_k": 5
-}
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | Chat UI |
+| POST | `/chat` | RAG query |
+| POST | `/reset` | Reset session history |
+| GET | `/health` | Health check |
+| GET | `/users` | List users with history |
+| DELETE | `/users/<user_name>` | Delete user history |
+| POST | `/visualize` | Rewrite for diagram generation |
+| POST | `/pb-start` | Start PaperBanana task |
+| GET | `/pb-stream/<task_id>` | SSE progress proxy |
+| GET | `/pb-image/<task_id>` | Result image (base64) |
+| DELETE | `/pb-cancel/<task_id>` | Cancel task |
+
+## Vector DB Setup
+
+### Redmine Issues
+
+Use an Airflow DAG (or any scheduler) to fetch issues from the Redmine API and upsert into ChromaDB:
+
+```python
+import chromadb
+from google import genai
+
+client = chromadb.PersistentClient(path="./vectordb/chroma_db_v0.2.0")
+col = client.get_or_create_collection("redmine_issues_raw_v4")
+
+# For each Redmine issue:
+# 1. Fetch via Redmine REST API
+# 2. Build document text from subject + description + journals
+# 3. Extract image attachment metadata
+# 4. Embed with Gemini embedding-001
+# 5. Upsert into collection with metadata
+
+genai_client = genai.Client(api_key="YOUR_KEY")
+embedding = genai_client.models.embed_content(
+    model="models/gemini-embedding-001",
+    contents=document_text,
+    config={"task_type": "RETRIEVAL_DOCUMENT"}
+).embeddings[0].values
+
+col.upsert(
+    ids=[str(issue_id)],
+    embeddings=[embedding],
+    documents=[document_text],
+    metadatas=[{
+        "issue_id": issue_id,
+        "subject": subject,
+        "attachment_ids": json.dumps(image_attachment_ids),
+        # ... other metadata
+    }]
+)
 ```
 
-**Response:**
-```json
-{
-  "answer": "The latest model achieved 95% accuracy...",
-  "sources": [
-    {
-      "id": "123",
-      "title": "Model Performance Update",
-      "content": "..."
-    }
-  ],
-  "question": "What is the latest model performance?"
-}
+### Metadata Schema (Redmine)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `issue_id` | int | Redmine issue ID |
+| `subject` | str | Issue title |
+| `author` | str | Issue author |
+| `created_on` | str | ISO datetime |
+| `updated_on` | str | ISO datetime |
+| `attachment_ids` | str (JSON) | Image attachment IDs |
+| `attachment_filenames` | str (JSON) | `{id: filename}` |
+| `attachment_urls` | str (JSON) | `{id: content_url}` |
+
+## Observability (Langfuse)
+
+When `LANGFUSE_*` env vars are set, each request creates a trace with:
+
+```
+Trace: rag-query
+  metadata: engine_name, use_case, route_reason, status
+  ├── Span: embedding
+  ├── Span: retrieval  (doc_count)
+  └── Span: llm-generation  (model, prompt, answer)
 ```
 
-### `GET /health`
-Health check endpoint
+Self-host Langfuse with Docker: [langfuse/langfuse](https://github.com/langfuse/langfuse)
 
-### `POST /reset`
-Reset conversation history
+## Changelog
 
-### `GET /users`
-List all users with conversation history
+### v0.3.3
+- flask-session (filesystem) — eliminates cookie size limit for sessions with many images
+- Image attachment metadata in ChromaDB (attachment_ids, filenames, urls)
+- Image overkill guard: `HAS_IMAGE_ATTACHMENTS` / `TEXT_METRICS_PRESENT` tags in context
+- Langfuse tracing integration (embedding / retrieval / llm-generation spans)
+- DAG schedule: Wednesday 07:30 KST
 
-### `DELETE /users/<user_name>`
-Delete user and their conversation history
+### v0.3.2
+- Redmine image proxy (`/redmine-image/<attachment_id>`)
+- Image thumbnails in source references (`[IMG n]`)
 
-## 🔧 Configuration
+### v0.3.1
+- Dual-source routing (Redmine + CRF) with vector similarity fallback
+- BM25 hybrid search with RRF for Redmine
+- CRF statistics with Gemini code execution
 
-### Environment Variables
+## License
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `GEMINI_API_KEY` | Google Gemini API key | (required) |
-| `VECTORDB_PATH` | Path to primary ChromaDB database | `/vectordb/chroma_db` |
-| `COLLECTION_NAME` | Primary ChromaDB collection name | `your_collection_name` |
-| `EMBEDDING_MODEL` | Embedding model type | `gemini` |
-| `PORT` | Server port | `8080` |
-| `GUNICORN_WORKERS` | Number of worker processes | `4` |
-| `LOG_LEVEL` | Logging level | `info` |
-
-For multiple data sources, add additional configuration with a prefix (e.g., `DB2_VECTORDB_PATH`, `DB2_COLLECTION_NAME`).
-
-## 🎯 Use Cases
-
-### 1. Technical Documentation Search
-Query project documentation, experiment results, and technical specifications.
-
-### 2. Research Data Analysis
-Analyze structured research data with automatic statistical calculations and visualization.
-
-### 3. Multi-domain Knowledge Base
-Integrate multiple knowledge bases with automatic query routing.
-
-### 4. Conversational AI Assistant
-Intelligent assistant that remembers context and handles follow-up questions.
-
-## 🔒 Security
-
-- Store API keys in environment variables
-- Use `.env` files for local development (never commit to git)
-- Implement authentication for production deployments
-- Use secret management systems (Kubernetes Secrets, AWS Secrets Manager, etc.)
-- Regular security updates and dependency scanning
-
-## 📊 Performance
-
-- **Response Time**: < 3 seconds for typical queries
-- **Concurrent Users**: Scales with Gunicorn workers
-- **Vector Search**: Optimized with ChromaDB HNSW indexing
-
-## 🚢 Deployment
-
-### Docker Deployment
-
-```bash
-# Build image
-docker build -t rag-chatbot:latest ./chatbot
-
-# Run container
-docker run -d \
-  -p 8080:8080 \
-  -v ./vectordb:/vectordb \
-  -e GEMINI_API_KEY=your_api_key \
-  -e VECTORDB_PATH=/vectordb/chroma_db \
-  -e COLLECTION_NAME=your_collection_name \
-  --name rag-chatbot \
-  rag-chatbot:latest
-```
-
-### Kubernetes
-
-Kubernetes manifests included for production deployment.
-
-## 📈 Roadmap
-
-- [ ] Support for more LLM providers
-- [ ] Advanced analytics dashboard
-- [ ] Multi-language support
-- [ ] Voice input/output capabilities
-- [ ] Additional data source integrations
-
-## 📝 License
-
-MIT License
-
-## 👨‍💻 Contributing
-
-Contributions are welcome! Please feel free to submit issues and pull requests.
+MIT

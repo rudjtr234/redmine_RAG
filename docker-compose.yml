@@ -1,38 +1,52 @@
-# Redmine RAG 챗봇 서비스
-# Vector DB는 Airflow가 별도로 관리
-# 챗봇은 Vector DB를 읽기 전용으로만 참조
+# Redmine RAG Chatbot Service
+# Vector DB is managed separately (e.g., via Airflow DAG)
+# Chatbot accesses Vector DB in read-only mode
 
 services:
-  # RAG 챗봇 웹 서비스 (프로덕션)
   chatbot:
     build:
       context: .
       dockerfile: ./chatbot/Dockerfile
     container_name: redmine-chatbot
     environment:
+      # --- Required ---
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - REDMINE_URL=${REDMINE_URL:-https://your-redmine.example.com}
+      - REDMINE_API_KEY=${REDMINE_API_KEY}
+
+      # --- Vector DB (Redmine) ---
       - VECTORDB_PATH=/vectordb/chroma_db_v0.2.0
       - COLLECTION_NAME=redmine_issues_raw_v4
-      - EMBEDDING_MODEL=gemini
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - REDMINE_URL=https://redmine.<INTERNAL-IP>.nip.io:30443
+
+      # --- Vector DB (CRF - Optional) ---
       - CRF_VECTORDB_PATH=/vectordb/crf_data/chroma_db_v0.3.0
-      - CRF_COLLECTION_NAME=crf_breast_v0.3.0
-      - CRF_EMBEDDING_MODEL=gemini
-      - PORT=50001
-      - GUNICORN_WORKERS=6
+      - CRF_COLLECTION_NAME=crf_all_cancers_v0.3.0
+
+      # --- Server ---
+      - PORT=8080
+      - GUNICORN_WORKERS=4
       - LOG_LEVEL=info
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+
+      # --- PaperBanana (Optional: diagram generation) ---
+      - PAPERBANANA_BASE_URL=${PAPERBANANA_BASE_URL:-}
+
+      # --- Langfuse (Optional: observability) ---
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+
     volumes:
-      # Vector DB 마운트 (143 서버의 vectordb 사용)
-      # 143 서버에서 실행 시: ./vectordb
-      # 145 서버에서 실행 시: /data/143/member/jks/redmine_RAG/vectordb
       - ${VECTORDB_HOST_PATH:-./vectordb}:/vectordb
-      # 로그 저장 (선택사항)
       - ./chatbot/logs:/app/logs
+
     ports:
-      - "50001:50001"
+      - "8080:8080"
+
     restart: unless-stopped
+
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:50001/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -16,61 +16,88 @@ PROMPT_TEMPLATES = {
 </사용자_질문>
 
 답변 작성 지침:
-1. **검색 문서 전체 분석 (매우 중요)**:
-   - **모든 검색된 문서를 처음부터 끝까지 반드시 읽고 분석**하세요
+1. 검색 문서 전체 분석 (매우 중요):
+   - 모든 검색된 문서를 처음부터 끝까지 반드시 읽고 분석하세요
    - 절대로 일부만 샘플링하거나 건너뛰지 마세요
    - 여러 이슈에 같은 모델이 나오면 모두 확인하여 최신/정확한 정보 제공
    - 특히 표 형식 데이터(실험 결과)는 모든 행을 꼼꼼히 확인
 
-2. **대화 맥락 활용**: 대화 히스토리가 있으면 맥락을 고려하여 답변 (예: "그것", "그 모델" 등의 지시어 해석)
+2. 대화 맥락 활용: 대화 히스토리가 있으면 맥락을 고려하여 답변 (예: "그것", "그 모델" 등의 지시어 해석)
 
-3. **핵심만 간결하게**: 불필요한 인사말이나 부연설명 없이 질문에 대한 답만 제공
+3. 핵심만 간결하게: 불필요한 인사말이나 부연설명 없이 질문에 대한 답만 제공
 
-4. **구조화된 형식**:
+4. 답변 형식 (중요):
+   - 마크다운 강조 문법 사용 금지: **굵게**, *기울임*, `코드` 등의 마크다운 형식을 사용하지 마세요
    - 단일 결과: "모델명 v0.0.0의 Dice Score는 0.0000입니다. (Issue #000)"
-   - 다중 결과: **반드시 마크다운 표 사용** (특히 여러 버전/모델 비교 시)
-   - 표 컬럼 예시: 모델 버전 | 실험 날짜 | 성능 지표 | 출처
+   - 다중 결과/비교: 마크다운 표(테이블)는 사용 가능
+   - 소제목/번호 목록은 최소화하고, 표는 질문에 필요한 핵심 컬럼만 사용
+   - 표 컬럼 예시: 개선사항 | 주요 결과 | 출처 / 모델 버전 | 성능 지표 | 출처
 
-5. **필수 포함 정보**:
-   - 모델명과 버전 (정확한 버전 번호 필수)
-   - 성능지표 (소수점 4자리까지)
-   - 이슈 번호 (반드시 포함)
-   - 실험 날짜 (있으면 포함)
+5. 포함 정보 기준:
+   - 모델명과 버전: 문서에 있으면 반드시 포함
+   - 성능지표 (소수점 4자리까지): 성능/지표 질문일 때만 필수, 알고리즘 설명·하이퍼파라미터·특허 등 질문에서는 해당 없으면 생략
+   - 이슈 번호: 반드시 포함
+   - 실험 날짜: 있으면 포함
 
-6. **근거 명시 및 출처 표기**:
+6. 근거 명시 및 출처 표기:
    - 각 정보 뒤에 "(Issue #번호)" 형식으로 출처 표기
    - 여러 이슈에서 가져온 경우 각각 표기 (예: v1.0: Issue #100, v2.0: Issue #200)
+   - Issue 번호 옆에 링크를 텍스트로 함께 표기 (예: Issue #611 (https://your-redmine.example.com/issues/611))
 
-7. **수치 정확성 (매우 중요)**:
-   - 성능 지표는 **절대로 반올림하거나 추정하지 마세요**
+7. 수치 정확성 (매우 중요):
+   - 성능 지표는 절대로 반올림하거나 추정하지 마세요
    - 문서에 있는 그대로 정확히 복사 (예: 0.3018이면 0.3018, 0.30으로 쓰지 않기)
    - 여러 값이 있으면 최신 또는 가장 관련성 높은 값 선택
 
-8. **버전 및 날짜 정확성**:
+8. 버전 및 날짜 정확성:
    - 버전 번호는 문서에 있는 그대로 표기 (v0.7.0, V0.7.0 등 원본 유지)
    - 날짜가 있으면 YYYY-MM-DD 형식으로 표시
    - 최신/이전 비교 시 날짜로 판단
 
-9. **검색 문서 내 정보만 사용**:
+9. 검색 문서 내 정보만 사용:
    - 추측이나 일반 지식 절대 사용 금지
    - 문서에 없는 내용은 "검색된 문서에서 해당 정보를 찾을 수 없습니다" 명시
 
-10. **답변 가능한 질문 유형**:
+9-1. 이미지 첨부 이슈 처리 규칙 (매우 중요):
+   - 이슈 헤더에 [HAS_IMAGE_ATTACHMENTS=true] 태그가 있으면 해당 이슈에 이미지 첨부가 존재함
+   - 하이퍼파라미터, 알고리즘 설명, 데이터셋 등 텍스트 본문에 있는 정보는 태그와 무관하게 정상 답변할 것
+   - 성능/지표 관련 질문(AUC, F1, Dice, mAP, Accuracy 등)에 한해 아래 규칙 적용:
+     · [TEXT_METRICS_PRESENT=false] 인 경우: 수치를 절대 추측하거나 생성하지 말 것
+       → 텍스트 본문의 다른 정보(실험 설정 등)는 먼저 답하고, 수치에 대해서만 "결과 지표는 첨부 이미지에 포함되어 있습니다. 답변 하단 참고 이슈에서 이미지를 직접 확인하세요." 안내
+     · [TEXT_METRICS_PRESENT=true] 인 경우: 본문 텍스트에 명시된 수치는 그대로 사용하여 정상 답변하고, "추가 결과는 첨부 이미지에 있을 수 있습니다." 한 줄만 덧붙일 것 (수치를 임의로 수정하거나 보완하지 말 것)
+   - 어떤 경우에도 이미지 내용을 직접 읽은 것처럼 "이미지에 따르면", "그래프상" 등의 표현 절대 사용 금지
+
+10. 퇴사자 명시 (중요):
+   - 아래 퇴사자의 이슈/문서가 검색 결과에 포함된 경우, 해당 작성자명 옆에 반드시 "(퇴사자)"를 표기하세요
+   - 퇴사자 목록: 경원 김, 김태규 선임, 순길 임, 원철 정, 은수 김
+   - 예: "경원 김 (퇴사자)이 작성한 Issue #123에 따르면..."
+
+10. 답변 가능한 질문 유형:
    - 모델/실험 설명 및 개요
    - 성능 지표 조회 (Dice Score, F1-score, AUC, Accuracy 등)
    - 실험 환경 및 설정 (하이퍼파라미터, GPU, 프레임워크 등)
    - 문제 해결 사례
    - 모델 개선 이력 및 버전 비교
 
-11. **답변 불가능한 질문**: 검색된 문서에 없는 내용이거나 실험/모델과 무관한 질문은 "검색된 문서에서 관련 정보를 찾을 수 없습니다"라고 답변
+11. 답변 불가능한 질문: 검색된 문서에 없는 내용이거나 실험/모델과 무관한 질문은 "검색된 문서에서 관련 정보를 찾을 수 없습니다"라고 답변
 
 예시 답변 형식:
-- 단일 질문: "Aialpa-TSR-brst V0.4.0의 Validation Dice Score는 0.3018입니다. (Issue #496)"
+- 단일 질문: "Aialpa-TSR-brst V0.4.0의 Validation Dice Score는 0.3018입니다. (Issue #496, https://your-redmine.example.com/issues/496)"
 - 비교 질문 (날짜 포함 가능):
-| 버전 | Dice Score | 날짜 | Issue |
-|------|-----------|------|-------|
-| v0.3.0 | 0.2850 | 2024-03-15 | #450 |
-| v0.4.0 | 0.3018 | 2024-04-20 | #496 |
+| 버전 | Dice Score | 날짜 | 출처 |
+|------|-----------|------|------|
+| v0.3.0 | 0.2850 | 2024-03-15 | Issue #450 (https://your-redmine.example.com/issues/450) |
+| v0.4.0 | 0.3018 | 2024-04-20 | Issue #496 (https://your-redmine.example.com/issues/496) |
+- 개선 사항 요약형:
+[요약]
+1) 최근 HRD 모델은 전체/외부 데이터 검증을 통해 성능의 일반화 가능성을 점검했습니다.
+2) 환자 단위 예측 전략을 개선하여 F1-score 중심 성능을 끌어올렸습니다.
+3) 주요 결과는 아래 표에 핵심 지표로 정리됩니다.
+
+| 개선사항 | 주요 결과 | 출처 |
+|---------|----------|------|
+| 전체/외부 데이터 검증 | 전체 1031명 및 TCGA 196명에서 F1 0.813/0.781 | Issue #1185, Issue #1169 |
+| 환자 단위 예측 최적화 | OR 규칙 F1 0.826, 최적 Threshold 0.40 | Issue #1037, Issue #1038 |
 """,
 
     # ========================================
@@ -257,6 +284,125 @@ PROMPT_TEMPLATES = {
 참고: Code Execution 기능을 사용하면 Python 코드가 자동으로 실행되고 차트 이미지가 생성됩니다.
 """
 ,
+
+    # ========================================
+    # paperbanana 도식화 재작성용 프롬프트
+    # ========================================
+    # 용도: RAG 답변(한글 알고리즘/방법론 설명)을 paperbanana 입력 포맷으로 변환
+    # 입력: {question}, {rag_answer}
+    # 출력: JSON {"source_context": "...", "communicative_intent": "..."}
+    # 주의: few-shot 예시 내 중괄호는 {{ }} 로 이스케이프됨 (Python .format() 호환)
+    "diagram_rewrite": """You are a technical diagram specification writer.
+Your task is to convert a Korean RAG answer into a structured English description optimized for academic diagram generation.
+
+STEP 1 — Identify the content type from the RAG answer:
+- TYPE A (Pipeline/Algorithm): Sequential stages, modules, data flows (e.g. model architecture, training procedure, data preprocessing)
+- TYPE B (Comparison/Metrics): Multiple items compared by attributes or numerical results (e.g. model comparison, ablation study, performance table)
+- TYPE C (Work/Task Flow): Tasks, schedules, progress, people and their roles (e.g. weekly report, project status, issue tracking)
+
+STEP 2 — Write source_context according to the identified type:
+- TYPE A: Write as numbered stages (Stage 1, Stage 2, ...) with data flow arrows. e.g. "A → B → C"
+- TYPE B: Describe each item and its key attributes/metrics side by side. e.g. "Model X: accuracy=95%, params=10M. Model Y: accuracy=93%, params=3M. Comparison axis: accuracy vs. efficiency."
+- TYPE C: Describe tasks, owners, status, and timeline as a structured flow. e.g. "Task 1 (owner, status): description. Task 2 ..."
+
+STRICT RULES:
+1. Extract ONLY information explicitly present in the RAG answer. Do NOT add, infer, or hallucinate.
+2. Preserve ALL details — do NOT summarize or omit any component, parameter, metric, or relationship.
+3. NEVER use patent language. Do NOT write "Claim", "independent claim", "dependent claim", "recites", "further specifies".
+4. communicative_intent must follow: "Figure: Illustrate the [pipeline/comparison/workflow] of [subject], showing [key elements]."
+5. Output valid JSON only. No markdown, no explanation, no extra keys.
+
+---
+
+EXAMPLE 1 — TYPE A: Deep Learning Pipeline (ABMIL)
+
+User question: ABMIL 모델 구조 설명해줘
+RAG answer (Korean): ABMIL은 Attention-Based Multiple Instance Learning 프레임워크로, WSI(Whole Slide Image)를 패치로 분할한 후 각 패치를 ResNet으로 인코딩하고, Attention 모듈이 각 패치의 가중치를 계산합니다. 가중합(Weighted Aggregation)으로 슬라이드 레벨 표현을 생성하고 최종 분류기가 예측을 수행합니다.
+
+Output:
+{{"source_context": "The ABMIL (Attention-Based Multiple Instance Learning) framework processes Whole Slide Images (WSI) through sequential stages. Stage 1 (WSI Input): The input Whole Slide Image is received. Stage 2 (Patch Extraction): The WSI is divided into fixed-size non-overlapping patches. Stage 3 (ResNet Encoding): Each patch is independently encoded by a ResNet feature extractor to produce a patch-level embedding vector. Stage 4 (Attention Weighting): An Attention module computes a scalar attention weight for each patch embedding, reflecting its diagnostic relevance. Stage 5 (Weighted Aggregation): All patch embeddings are combined using their attention weights to produce a single slide-level representation. Stage 6 (Classification): A fully connected classifier outputs the predicted class label. Data flows: WSI → Patch Extraction → ResNet Encoder → Attention Module → Weighted Aggregation → Classifier.", "communicative_intent": "Figure: Illustrate the end-to-end inference pipeline of the ABMIL model, showing data flow from WSI input through patch encoding, attention weighting, aggregation, and final classification."}}
+
+---
+
+EXAMPLE 2 — TYPE B: Model Comparison
+
+User question: 모델별 성능 비교해줘
+RAG answer (Korean): ResNet50은 정확도 92.3%, 파라미터 수 25M, 추론 속도 45ms입니다. EfficientNet-B4는 정확도 94.1%, 파라미터 수 19M, 추론 속도 38ms입니다. MobileNetV3는 정확도 89.7%, 파라미터 수 5.4M, 추론 속도 12ms로 경량화에 유리합니다.
+
+Output:
+{{"source_context": "Three classification models are compared across accuracy, parameter count, and inference speed. Model 1 (ResNet50): accuracy=92.3%, parameters=25M, inference=45ms — baseline model with high parameter count. Model 2 (EfficientNet-B4): accuracy=94.1%, parameters=19M, inference=38ms — best accuracy with moderate efficiency. Model 3 (MobileNetV3): accuracy=89.7%, parameters=5.4M, inference=12ms — lightweight model optimized for speed. Comparison axes: Accuracy (89.7% ~ 94.1%), Parameters (5.4M ~ 25M), Inference Speed (12ms ~ 45ms). Trade-off: MobileNetV3 sacrifices 4.4% accuracy for 3.75x speed gain over EfficientNet-B4.", "communicative_intent": "Figure: Illustrate the performance comparison of ResNet50, EfficientNet-B4, and MobileNetV3, showing trade-offs between accuracy, parameter count, and inference speed."}}
+
+---
+
+EXAMPLE 3 — TYPE C: Work/Task Flow
+
+User question: 이번주 진행 상황 알려줘
+RAG answer (Korean): 이호준 사원은 Mobile Colpo 전처리 모듈 개발을 완료했고, 장경석 사원은 ABMIL 모델 학습 실험을 진행 중입니다. 민기 홍 사원은 CRF 데이터 정제 작업을 완료 후 특징 추출 단계로 넘어갔습니다. 다음 주 목표는 세 모듈의 통합 테스트입니다.
+
+Output:
+{{"source_context": "Weekly task status for the MTS BIO-DT team. Task 1 (이호준, Completed): Mobile Colpo preprocessing module development — fully implemented and delivered. Task 2 (장경석, In Progress): ABMIL model training experiments — currently running training iterations. Task 3 (민기 홍, Completed → Next): CRF data cleaning completed; now proceeding to feature extraction stage. Next milestone: Integration test of all three modules (Mobile Colpo preprocessing + ABMIL model + CRF feature extraction) scheduled for next week.", "communicative_intent": "Figure: Illustrate the weekly work progress of the MTS BIO-DT team, showing individual task owners, completion status, and the upcoming integration milestone."}}
+
+---
+
+Now convert the following:
+
+User question: {question}
+
+RAG answer:
+{rag_answer}
+
+Output (JSON only):
+""",
+
+    # ========================================
+    # paperbanana 특허 도식화 재작성용 프롬프트
+    # ========================================
+    # 용도: RAG 답변(한글)을 특허 청구항 구조의 영문 도식 설명으로 강제 변환
+    # 입력: {question}, {rag_answer}
+    # 출력: JSON {"source_context": "...", "communicative_intent": "..."}
+    "diagram_rewrite_patent": """You are a patent diagram specification writer.
+Your task is to FORCEFULLY reframe any Korean technical description into a structured English patent claim diagram specification.
+Regardless of whether the input is a patent document or a general algorithm description, you MUST convert it into patent claim hierarchy format.
+
+STRICT RULES:
+1. ALWAYS structure source_context as a patent claim hierarchy: Independent Claim 1 (main invention) + Dependent Claims 2, 3, 4... (sub-components/refinements).
+2. If the input is an algorithm or system description (not a patent), interpret it as "what claims this invention would have if patented" and write accordingly.
+3. source_context must explicitly use patent language: "independent Claim 1 comprises...", "Claim 2 further specifies...", "Claim 3 recites...", etc.
+4. communicative_intent must follow: "Figure: Illustrate the patent claim hierarchy of [invention name], showing independent Claim 1 and dependent Claims N through M."
+5. Output valid JSON only. No markdown, no explanation, no extra keys.
+6. Max 400 words for source_context.
+
+---
+
+EXAMPLE 1 — Algorithm description reframed as patent
+
+User question: Digital Twin 알고리즘 설명해줘
+RAG answer (Korean): 이 시스템은 시계열 병리 슬라이드와 약물 정보를 입력받아 조건부 생성 AI 모델로 미래 조직 상태를 예측하고, 자기지도 학습으로 형태학적 변화 패턴을 학습합니다. L1/L2 재구성 손실과 시간적 일관성 손실을 결합하여 최적화합니다.
+
+Output:
+{{"source_context": "PATENT CLAIM DIAGRAM — Digital Twin Tissue State Prediction System. Independent Claim 1 comprises a method for predicting future tissue states using a conditional generative AI model, wherein the method receives as input time-series pathology slide images and drug administration information including drug type, dose, and schedule. Claim 2 further specifies that the model employs self-supervised learning using paired patient slide sequences to learn morphological change patterns without explicit treatment response labels. Claim 3 recites that the optimization objective is a combined loss function comprising: (a) L1/L2 reconstruction loss measuring the difference between generated and actual tissue images, and (b) temporal consistency loss ensuring chronological coherence across predicted time steps. Claim 4 specifies an auxiliary learning module that incorporates explicit supervision signals including Responder/Non-responder labels and morphological metrics such as tumor cell density, when available. The claim hierarchy flows from Claim 1 (core prediction method) to Claim 2 (self-supervised training) to Claim 3 (combined loss) to Claim 4 (auxiliary supervision).", "communicative_intent": "Figure: Illustrate the patent claim hierarchy of the Digital Twin tissue state prediction system, showing independent Claim 1 as the core generative prediction method and dependent Claims 2 through 4 covering self-supervised learning, combined loss optimization, and auxiliary supervision."}}
+
+---
+
+EXAMPLE 2 — Existing patent document
+
+User question: 이 특허의 구조 알려줘
+RAG answer (Korean): 본 발명은 WSI 패치를 ResNet으로 인코딩하고 Attention 모듈로 가중치를 계산하여 슬라이드 레벨 표현을 생성하는 암 진단 방법입니다. 청구항 1은 전처리, 특징 추출, 분류 3단계로 구성되며, 종속항 2는 패치 분할, 종속항 3은 어텐션 메커니즘을 다룹니다.
+
+Output:
+{{"source_context": "PATENT CLAIM DIAGRAM — WSI-based Cancer Diagnosis Method. Independent Claim 1 comprises a three-step cancer diagnostic method: Step 1 (Preprocessing) receives a Whole Slide Image and applies normalization; Step 2 (Feature Extraction) encodes each patch using a ResNet encoder to produce patch-level embeddings; Step 3 (Classification) aggregates embeddings and outputs a diagnostic prediction. Claim 2 further specifies that the preprocessing step divides the WSI into fixed-size non-overlapping patches prior to encoding. Claim 3 recites that the feature extraction step employs an Attention module that computes a scalar weight for each patch embedding reflecting its diagnostic relevance, and produces the slide-level representation via weighted aggregation. The claim hierarchy flows from Claim 1 (core three-step method) to Claim 2 (patch division detail) to Claim 3 (attention mechanism detail).", "communicative_intent": "Figure: Illustrate the patent claim hierarchy of the WSI-based cancer diagnosis method, showing independent Claim 1 as the three-step pipeline and dependent Claims 2 and 3 specifying patch division and attention-based aggregation."}}
+
+---
+
+Now convert the following into patent claim diagram format:
+
+User question: {question}
+
+RAG answer:
+{rag_answer}
+
+Output (JSON only):
+""",
 
     # ========================================
     # 일반 문서 검색용 프롬프트

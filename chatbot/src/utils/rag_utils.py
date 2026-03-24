@@ -1,4 +1,32 @@
-"""Helper methods for RedmineRAG - 리팩토링 버전"""
+"""
+RAG Utils - 범용 유틸리티 함수 모음
+
+[역할]
+이 파일은 RAG 엔진 전반에서 사용되는 **재사용 가능한 저수준 유틸리티 함수**들을 제공합니다.
+패턴 매칭, 데이터 추출, 변환, 검색 쿼리 구성 등 독립적인 헬퍼 함수들을 모아놓은 공구함입니다.
+
+[주요 기능]
+1. 임베딩 및 프롬프트
+   - 텍스트 임베딩, 프롬프트 빌딩, 컨텍스트 포맷팅
+2. 질문 분류 (패턴 기반)
+   - 일반 대화/CRF/Redmine/통계/메타데이터/최신 질문 등 판별
+3. ID 및 토큰 추출
+   - 이슈 번호, CRF record ID, 병원 코드, 버전 토큰 추출
+   - 병원명↔코드 변환
+4. 검색 쿼리 구성
+   - 대화 맥락을 반영한 검색 쿼리 생성
+5. 키워드 추출 및 필터링
+   - 모델 키워드 캐싱, 추출, 필터링, 키워드 보강 검색
+6. 정렬
+   - 타임스탬프 파싱, 최신순 정렬
+7. 대화 관리
+   - 대화 저장/검색/요약, 사용자 목록 조회/삭제
+
+[vs rag_engine_helpers.py]
+- 이 파일은 범용 유틸리티 함수들을 제공 (공구함)
+- rag_engine_helpers.py는 이 함수들을 조합하여 query() 메서드의 실행 흐름을 구현 (조립 매뉴얼)
+"""
+import json
 import logging
 import re
 import time
@@ -13,7 +41,12 @@ logger = logging.getLogger(__name__)
 
 
 class RAGHelperMixin:
-    """RAG 엔진을 위한 헬퍼 메서드 모음"""
+    """
+    RAG 엔진을 위한 범용 헬퍼 메서드 모음
+
+    이 클래스는 재사용 가능한 저수준 유틸리티 함수들을 제공합니다.
+    패턴 매칭, 데이터 추출/변환, 검색 쿼리 구성, 대화 관리 등의 독립적인 기능들을 담당합니다.
+    """
 
     # 상수 가져오기
     SESSION_ID_PREFIX = C.SESSION_ID_PREFIX
@@ -34,14 +67,29 @@ class RAGHelperMixin:
         return cls._compiled_patterns[pattern_name]
 
     def _embed(self, text: str, task_type: str):
-        if self.embedding_type == "gemini":
-            result = self.genai_client.models.embed_content(
-                model=self.embedding_model_name,
-                contents=text,
-                config=types.EmbedContentConfig(task_type=task_type)
-            )
-            return result.embeddings[0].values
-        return self.embedding_model.encode(text).tolist()
+        lf = getattr(self, 'langfuse', None)
+        lf_span = None
+        if lf and getattr(self, '_current_trace', None):
+            try:
+                lf_span = lf.start_span(
+                    name="embedding",
+                    input={"text": text[:200], "task_type": task_type}
+                )
+            except Exception:
+                lf_span = None
+
+        result = self.genai_client.models.embed_content(
+            model=self.embedding_model_name,
+            contents=text,
+            config=types.EmbedContentConfig(task_type=task_type)
+        )
+
+        if lf_span:
+            try:
+                lf_span.end()
+            except Exception:
+                pass
+        return result.embeddings[0].values
 
     def _build_prompt(self, context: str, history_text: str, question: str) -> str:
         template_key = {"redmine": "redmine", "crf": "crf"}.get(self.use_case, "document")
@@ -55,12 +103,33 @@ class RAGHelperMixin:
         """일반 대화용 프롬프트"""
         return PROMPT_TEMPLATES["general"].format(question=question)
 
+    _METRIC_PATTERN = re.compile(
+        r'(?:AUC|F1(?:-score)?|Accuracy|Dice(?:\s*score)?|mAP\d*|Precision|Recall|Sensitivity|Specificity|AUROC|AP|IoU|Score|Loss)'
+        r'(?:\s*[-:=|]\s*|\s+)'   # 구분자: : = - | 또는 공백
+        r'(?:\d+\.?\d*\s*%?'       # 숫자 + 선택적 %
+        r'|\|\s*\d+\.?\d*)',       # 마크다운 표: | 0.91
+        re.IGNORECASE
+    )
+
     def _format_context(self, documents: list, metadatas: list, limit: int) -> str:
         if self.use_case == "redmine":
-            return "\n\n".join(
-                f"[이슈 #{m.get('issue_id')} - {m.get('subject')}]\n{doc}"
-                for m, doc in zip(metadatas[:limit], documents[:limit])
-            )
+            parts = []
+            for m, doc in zip(metadatas[:limit], documents[:limit]):
+                try:
+                    att_ids = json.loads(m.get("attachment_ids", "[]"))
+                except Exception:
+                    att_ids = []
+                has_image = len(att_ids) > 0
+                has_metrics = bool(self._METRIC_PATTERN.search(doc))
+                header = f"[이슈 #{m.get('issue_id')} - {m.get('subject')}]"
+                if has_image:
+                    header += (
+                        f"\n[HAS_IMAGE_ATTACHMENTS=true]"
+                        f"\n[IMAGE_ATTACHMENT_COUNT={len(att_ids)}]"
+                        f"\n[TEXT_METRICS_PRESENT={'true' if has_metrics else 'false'}]"
+                    )
+                parts.append(f"{header}\n{doc}")
+            return "\n\n".join(parts)
         if self.use_case == "crf":
             return "\n\n".join(
                 "[CRF {record_id} | 병원 {hospital} | 시트 {sheet}]\n{doc}".format(
@@ -174,16 +243,6 @@ class RAGHelperMixin:
                     return code
         return None
 
-    def _extract_version_tokens(self, text: str) -> list:
-        """버전 문자열 추출"""
-        tokens = set()
-        for match in P.VERSION_TOKEN_PATTERN.findall(text):
-            tokens.add(match.lower())
-            if match.lower().startswith('v'):
-                tokens.add(match.lower()[1:])
-            else:
-                tokens.add(f"v{match.lower()}")
-        return list(tokens)
 
     def _convert_hospital_names_to_codes(self, text: str) -> str:
         """병원명을 코드로 변환"""
@@ -405,6 +464,63 @@ class RAGHelperMixin:
         except Exception:
             return None
 
+    def _ensure_staff_latest_issues(self, documents: list, metadatas: list, distances: list, question: str = ""):
+        """단체 쿼리 시 지정 사원별 최신 이슈를 DB에서 직접 조회해 앞에 보장
+
+        벡터 유사도와 무관하게 JUNIOR_STAFF 각 사원의 가장 최신 이슈를
+        현재 문서 목록 앞에 추가(이미 있으면 중복 제거).
+        질문에 '기획' 키워드가 있으면 PLANNING_STAFF도 포함.
+        """
+        existing_ids = set()
+        for meta in metadatas:
+            if meta:
+                issue_id = str(meta.get('issue_id', ''))
+                if issue_id:
+                    existing_ids.add(issue_id)
+
+        guaranteed_docs, guaranteed_metas, guaranteed_dists = [], [], []
+
+        staff_list = list(C.JUNIOR_STAFF)
+        if "기획" in question:
+            staff_list += list(C.PLANNING_STAFF)
+
+        for staff_name in staff_list:
+            try:
+                results = self.collection.get(
+                    where={"author_name": {"$eq": staff_name}},
+                    include=["metadatas", "documents"]
+                )
+            except Exception:
+                continue
+
+            if not results['ids']:
+                continue
+
+            items = list(zip(results['ids'], results['metadatas'], results['documents']))
+            # 제목에 주간/보고/회의 키워드 포함된 이슈만
+            report_items = [
+                item for item in items
+                if any(kw in (item[1] or {}).get('subject', '') for kw in C.STAFF_REPORT_SUBJECT_KEYWORDS)
+            ]
+            if not report_items:
+                continue
+
+            report_items.sort(key=lambda x: x[1].get('updated_on', '') if x[1] else '', reverse=True)
+
+            latest_id, latest_meta, latest_doc = report_items[0]
+
+            if str(latest_id) not in existing_ids:
+                guaranteed_docs.append(latest_doc)
+                guaranteed_metas.append(latest_meta)
+                guaranteed_dists.append(0.0)
+                existing_ids.add(str(latest_id))
+                logger.info(f"    ➕ {staff_name} 최신 이슈 보장: #{latest_id} ({latest_meta.get('updated_on','')[:10]})")
+
+        if guaranteed_docs:
+            return guaranteed_docs + documents, guaranteed_metas + metadatas, guaranteed_dists + distances
+
+        return documents, metadatas, distances
+
     def _sort_by_recency(self, documents: list, metadatas: list, distances: list):
         """최신순 정렬"""
         if not metadatas:
@@ -423,6 +539,42 @@ class RAGHelperMixin:
             [s[1] for s in scored],
             [s[2] for s in scored],
             [s[3] for s in scored],
+        )
+
+    def _promote_latest_per_author(self, documents: list, metadatas: list, distances: list):
+        """작성자별 가장 최신 이슈를 앞으로 올림 (최신 쿼리 전용)
+
+        날짜순 정렬 후에도 특정 작성자의 최신 이슈가 뒤로 밀릴 수 있으므로,
+        각 작성자의 가장 최신 이슈를 먼저 모은 뒤 나머지를 붙인다.
+        """
+        if not metadatas:
+            return documents, metadatas, distances
+
+        seen_authors = {}
+        promoted = []   # (timestamp, doc, meta, dist) — 작성자별 최신 1개
+        rest = []       # 나머지
+
+        for doc, meta, dist in zip(documents, metadatas, distances):
+            author = (meta or {}).get('author_name', '') if meta else ''
+            timestamp = None
+            if meta:
+                timestamp = meta.get('updated_on') or meta.get('created_on')
+            parsed = self._parse_timestamp(timestamp) if timestamp else None
+
+            if author and author not in seen_authors:
+                seen_authors[author] = True
+                promoted.append((parsed, doc, meta, dist))
+            else:
+                rest.append((parsed, doc, meta, dist))
+
+        # promoted도 최신순 정렬
+        promoted.sort(key=lambda x: (x[0] is not None, x[0]), reverse=True)
+
+        merged = promoted + rest
+        return (
+            [s[1] for s in merged],
+            [s[2] for s in merged],
+            [s[3] for s in merged],
         )
 
     # ========================================

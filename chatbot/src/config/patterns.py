@@ -7,10 +7,13 @@ import re
 
 # 이슈 및 레코드 ID 추출
 ISSUE_ID_PATTERN = re.compile(r'issue\s*#?(\d+)|이슈\s*#?(\d+)|#(\d+)', re.IGNORECASE)
-CRF_RECORD_PATTERN = re.compile(r'(BC_\d+_\d+)', re.IGNORECASE)
+CRF_RECORD_PATTERN = re.compile(
+    r'((?:BC|TC|UT|HC)[_-]\d{2}[_-]\d{4}|SS\d{6,})',
+    re.IGNORECASE
+)
 
 # 버전 관련
-VERSION_TOKEN_PATTERN = re.compile(r'(v?\d+\.\d+(?:\.\d+)?)', re.IGNORECASE)
+# VERSION_TOKEN_PATTERN = re.compile(r'(v?\d+\.\d+(?:\.\d+)?)', re.IGNORECASE)  # 유사도 검색으로 대체 (2026-01-19)
 VERSION_FILTER_PATTERN = re.compile(r"v?\d+(?:\.\d+)+", re.IGNORECASE)
 
 # 모델 키워드
@@ -100,9 +103,12 @@ TECHNICAL_QUERY_PATTERNS = [
 
 # Redmine 이슈 질문 패턴
 REDMINE_QUERY_PATTERNS = [
+    # 기본
     r"\bredmine\b",
     r"이슈",
     r"issue",
+
+    # ML/DL 핵심
     r"\b모델\b",
     r"\bmodel\b",
     r"실험",
@@ -120,19 +126,84 @@ REDMINE_QUERY_PATTERNS = [
     r"performance",
     r"정확도",
     r"accuracy",
+    r"검증",
+    r"validation",
+    r"추론",
+    r"inference",
+    r"손실",
+    r"\bloss\b",
+    r"epoch",
+    r"batch",
+    r"optimizer",
+    r"metric",
+
+    # 평가 지표
     r"f1[_\s-]?score",
     r"auc",
     r"auroc",
     r"\bmap\b",
     r"recall",
     r"precision",
+
+    # 개발/인프라
+    r"배포",
+    r"deploy",
+    r"docker",
+    r"k8s",
+    r"kubernetes",
+    r"pipeline",
+    r"서버",
+    r"server",
+    r"\bapi\b",
+
+    # 주간회의/보고
+    r"주간",
+    r"회의",
+    r"보고",
+
+    # 특수 프로젝트
+    r"스마트시티",
+    r"\bhar\b",
+    r"레이더",
+    r"radar",
+    r"fmcw",
+    r"낙상",
+    r"\bces\b",
+    r"특허",
+    r"아이디어",
+    r"\bsop\b",
+    r"절차서",
+    r"인수인계",
+    r"조사",
+    r"논문",
+
+    # AI 모델명 (유저 질문 패턴 기반 추가)
+    r"\blnmp\b",          # 유방암 림프절 전이 예측
+    r"mitosis",           # 세포분열 검출
+    r"mitof",             # mitof-objectDet 시리즈
+    r"objectdet",         # object detection 모델
+    r"parpi",             # PARP inhibitor 반응 예측
 ]
 
 # CRF 데이터 질문 패턴 (기본)
 CRF_BASE_PATTERNS = [
     r"\bcrf\b",
     r"breast",
+    r"stomach",
+    r"thyroid",
+    r"colorectal",
+    r"cervix",
+    r"prostate",
+    r"liver",
+    r"\bhrd\b",
     r"유방",
+    r"위암",
+    r"갑상선암",
+    r"대장암",
+    r"난소암",
+    r"자궁경부암",
+    r"전립선암",
+    r"간암",
     r"임상\s*데이터",
     r"환자",
     r"병원명",
@@ -142,7 +213,8 @@ CRF_BASE_PATTERNS = [
     r"수술연월일",
     r"진단명",
     r"record[_\s-]?id",
-    r"bc_\d+_\d+",
+    r"(?:bc|tc|ut|hc)[_-]\d{2}[_-]\d{4}",
+    r"ss\d{6,}",
     r"통합\s*데이터",
     r"코딩\s*설명",
     r"항목\s*용어",
@@ -179,6 +251,11 @@ CRF_MEDICAL_PATTERNS = [
     r"수용체",
     r"양성|음성",
     r"판독",
+    r"hpv",
+    r"gleason",
+    r"hbsag",
+    r"esd",
+    r"msi",
 ]
 
 # CRF 필드명 패턴
@@ -268,4 +345,11 @@ CONDITIONAL_QUERY_PATTERNS = [
 ]
 
 # 최신 질문 패턴
-RECENT_QUERY_PATTERN = re.compile(r"최신|최근|가장\s*새로운|latest|recent", re.IGNORECASE)
+RECENT_QUERY_PATTERN = re.compile(
+    r"최신|최근|가장\s*최근|제일\s*최근|가장\s*새로운|제일\s*새로운|"
+    r"최근\s*것|최근\s*거|최근\s*꺼|최근\s*걸|"
+    r"가장\s*마지막|제일\s*마지막|마지막\s*으로|마지막\s*에|"
+    r"이번\s*주|이번주|저번\s*주|저번주|지난\s*주|지난주|"
+    r"요즘|lately|latest|recent|last\s*week|this\s*week",
+    re.IGNORECASE
+)

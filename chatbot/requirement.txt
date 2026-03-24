@@ -12,6 +12,11 @@ sentence-transformers==2.7.0
 # LLM API (Code Execution 지원) - 새 SDK
 google-genai>=0.3.0
 
+# BM25 Hybrid Search
+rank-bm25>=0.2.2
+
 # Utilities
 requests==2.31.0
 python-dotenv==1.0.0
+flask-session==0.8.0
+langfuse>=2.0.0,<4.0.0

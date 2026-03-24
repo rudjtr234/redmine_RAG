@@ -1,9 +1,14 @@
 """Redmine RAG Engine - ChromaDB + Gemini (리팩토링 버전)"""
 import logging
 import os
+import re
 import chromadb
 from google import genai
-from sentence_transformers import SentenceTransformer
+try:
+    from langfuse import Langfuse as _Langfuse
+except ImportError:
+    _Langfuse = None
+from rank_bm25 import BM25Okapi
 from utils.rag_utils import RAGHelperMixin
 from utils.crf_statistics import CRFStatisticsMixin
 from utils.rag_engine_helpers import QueryHelperMixin
@@ -14,13 +19,11 @@ logger = logging.getLogger(__name__)
 
 class RedmineRAG(RAGHelperMixin, CRFStatisticsMixin, QueryHelperMixin):
     def __init__(self, vectordb_path: str, collection_name: str, gemini_api_key: str,
-                 embedding_model: str = "sentence-transformers", redmine_url: str = None,
-                 use_case: str = "redmine", conversation_db_path: str = None,
-                 crf_collection_name: str = None):
-        logger.info(f"🔧 RAG 엔진 초기화: {collection_name} ({embedding_model})")
+                 redmine_url: str = None, use_case: str = "redmine",
+                 conversation_db_path: str = None, crf_collection_name: str = None):
+        logger.info(f"🔧 RAG 엔진 초기화: {collection_name} (gemini)")
 
-        self.redmine_url = redmine_url or "https://redmine.<INTERNAL-IP>.nip.io:30443"
-        self.embedding_type = embedding_model
+        self.redmine_url = redmine_url or "https://your-redmine.example.com"
         self.use_case = use_case
 
         # 메인 DB 클라이언트
@@ -51,48 +54,117 @@ class RedmineRAG(RAGHelperMixin, CRFStatisticsMixin, QueryHelperMixin):
 
         # Gemini Client 생성
         self.genai_client = genai.Client(api_key=gemini_api_key)
-        # Code Execution/차트용: 최신 Flash (빠르고 안정적)
-        self.model_name = 'gemini-3-flash-preview'
-        # Q&A용: 안정적인 2.5-pro
+        self.model_name = 'gemini-2.5-pro'
         self.model_name_pro = 'gemini-2.5-pro'
 
         logger.info(f"✅ Gemini Client 초기화 완료 (모델: {self.model_name_pro})")
 
-        if embedding_model == "gemini":
-            # gemini-embedding-001: 안정 버전 (권장)
-            self.embedding_model_name = "models/gemini-embedding-001"
+        # gemini-embedding-001: 안정 버전 (권장)
+        self.embedding_model_name = "models/gemini-embedding-001"
+
+        # BM25 인덱스 초기화 (Redmine 전용)
+        self.bm25_index = None
+        self.bm25_doc_ids = []
+        self.bm25_corpus = []
+        if use_case == "redmine" and C.BM25_CONFIG.get("enabled", False):
+            self._build_bm25_index()
+
+        # Langfuse 초기화 (환경변수 없으면 비활성화)
+        self._current_trace = None
+        lf_host = os.environ.get("LANGFUSE_HOST")
+        lf_pub  = os.environ.get("LANGFUSE_PUBLIC_KEY")
+        lf_sec  = os.environ.get("LANGFUSE_SECRET_KEY")
+        if _Langfuse and lf_host and lf_pub and lf_sec:
+            try:
+                self.langfuse = _Langfuse(host=lf_host, public_key=lf_pub, secret_key=lf_sec)
+                logger.info(f"✅ Langfuse 초기화 완료 ({lf_host})")
+            except Exception as e:
+                logger.warning(f"⚠️ Langfuse 초기화 실패: {e}")
+                self.langfuse = None
         else:
-            self.embedding_model = SentenceTransformer('intfloat/multilingual-e5-large')
+            self.langfuse = None
 
         logger.info("✅ RAG 엔진 준비 완료!")
 
-    def query(self, question: str, top_k: int = None, chat_history: list = None, session_id: str = None) -> dict:
+    def _lf_trace_end(self, output: str = None, status: str = "success", error_message: str = None):
+        """Langfuse trace span 종료 (공통 헬퍼)"""
+        span = getattr(self, '_lf_span', None)
+        if not span:
+            return
+        try:
+            meta = {"status": status}
+            if error_message:
+                meta["error_message"] = error_message
+            kwargs = {"metadata": meta}
+            if output is not None:
+                kwargs["output"] = output
+            span.update(**kwargs)
+            span.end()
+        except Exception:
+            pass
+        self._lf_span = None
+        self._current_trace = None
+
+    def query(self, question: str, chat_history: list = None, session_id: str = None,
+              engine_name: str = None, route_reason: str = None) -> dict:
         """
         질문에 대한 답변 생성 (Multi-turn 지원 + 과거 대화 검색)
-        리팩토링: 헬퍼 메서드 활용으로 간결화 (532줄 → 60줄)
+
+        변경: top_k 파라미터 제거 → candidate_k + 유사도 컷오프 방식으로 자동 결정
         """
         try:
             if chat_history is None:
                 chat_history = []
 
+            # Langfuse trace 시작 (start_span 직접 호출 방식)
+            self._lf_span = None
+            self._current_trace = None
+            if self.langfuse:
+                try:
+                    from langfuse.types import TraceContext
+                    self._lf_span = self.langfuse.start_span(
+                        name="rag-query",
+                        input=question,
+                        metadata={
+                            "use_case": self.use_case,
+                            "engine_name": engine_name or self.use_case,
+                            "route_reason": route_reason or "unknown",
+                            "status": "in_progress",
+                            "user_id": session_id,
+                            "session_id": session_id,
+                        },
+                    )
+                    self._current_trace = True
+                except Exception as e:
+                    logger.warning(f"⚠️ Langfuse span 시작 실패: {e}")
+                    self._lf_span = None
+
             recent_query = self._is_recent_query(question)
 
             # 1. 특수 질문 타입 처리 (early return)
             if self._is_general_conversation(question):
-                return self._handle_general_conversation(question)
+                result = self._handle_general_conversation(question)
+                self._lf_trace_end(output=result.get("answer", ""), status="success")
+                return result
 
             if self._is_conversation_history_query(question):
-                return self._handle_conversation_history_query(question, session_id)
+                result = self._handle_conversation_history_query(question, session_id)
+                self._lf_trace_end(output=result.get("answer", ""), status="success")
+                return result
 
             # 2. CRF 메타데이터 질문 (초기 체크)
             if self.use_case == "crf" and self._is_metadata_query(question):
                 hospital_code = self._extract_hospital_code_from_question(question)
-                return self._handle_crf_metadata_query(question, hospital_code, chat_history)
+                result = self._handle_crf_metadata_query(question, hospital_code, chat_history)
+                self._lf_trace_end(output=result.get("answer", ""), status="success")
+                return result
 
             # 3. CRF 통계/차트 질문은 바로 처리 (벡터 검색 생략)
             if self.use_case == "crf" and self._is_statistics_query(question):
                 hospital_code = self._extract_hospital_code_from_question(question)
-                return self._handle_crf_statistics_query(question, hospital_code)
+                result = self._handle_crf_statistics_query(question, hospital_code)
+                self._lf_trace_end(output=result.get("answer", ""), status="success")
+                return result
 
             # 4. 직접 조회 시도 (이슈 번호 또는 CRF record_id)
             direct_results = self._perform_direct_lookup(question)
@@ -107,35 +179,81 @@ class RedmineRAG(RAGHelperMixin, CRFStatisticsMixin, QueryHelperMixin):
                 if relevant_history:
                     logger.info(f"  📚 관련 과거 대화: {len(relevant_history)}개 발견")
 
-            # 6. Top-K 결정
-            top_k = self._determine_top_k(question, top_k, recent_query)
+            # 6. Candidate-K 결정 (많이 검색 후 컷오프)
+            candidate_k = self._determine_candidate_k(question)
 
-            # 7. 문서 검색
+            # 7. 문서 검색 (candidate_k 개수만큼)
             documents, metadatas, distances = self._search_documents(
-                question, chat_history, direct_results, top_k
+                question, chat_history, direct_results, candidate_k
             )
 
             if not documents:
+                self._lf_trace_end(output="관련 정보를 찾을 수 없습니다.", status="not_found")
                 return {
                     "answer": "관련 정보를 찾을 수 없습니다.",
                     "sources": [],
                     "question": question
                 }
 
-            # 8. 문서 후처리 (버전 재정렬, 최신순 정렬, 키워드 보강)
+            # 8. 유사도 기반 컷오프 적용 (관련 문서만 남김)
+            documents, metadatas, distances = self._apply_similarity_cutoff(
+                documents, metadatas, distances
+            )
+
+            # 9. 문서 후처리 (버전 재정렬, 최신순 정렬, 키워드 보강)
             documents, metadatas, distances = self._post_process_documents(
                 documents, metadatas, distances, question, recent_query
             )
 
-            # 9. 컨텍스트 구성 및 답변 생성
-            return self._generate_answer(
-                question, documents, metadatas, distances, 
+            # 10. 컨텍스트 구성 및 답변 생성
+            result = self._generate_answer(
+                question, documents, metadatas, distances,
                 chat_history, relevant_history
             )
 
+            self._lf_trace_end(output=result.get("answer", ""), status="success")
+            return result
+
         except Exception as e:
             logger.error(f"❌ 쿼리 처리 중 오류: {str(e)}")
+            self._lf_trace_end(status="error", error_message=str(e))
             raise
+
+    def _tokenize_for_bm25(self, text: str) -> list:
+        """BM25용 토크나이징 (한글+영문+숫자+버전 토큰 보존)"""
+        text_lower = text.lower()
+        tokens = re.findall(r'[a-z0-9][a-z0-9._\-]*[a-z0-9]|[a-z0-9]+|[\uac00-\ud7af]+', text_lower)
+        return tokens
+
+    def _build_bm25_index(self):
+        """ChromaDB 전체 문서를 로드하여 BM25 인덱스 구축"""
+        try:
+            logger.info("📚 BM25 인덱스 구축 시작...")
+            all_data = self.collection.get(include=["documents", "metadatas"])
+            docs = all_data.get("documents", [])
+            ids = all_data.get("ids", [])
+            metadatas = all_data.get("metadatas", [])
+
+            if not docs:
+                logger.warning("  ⚠️ BM25 인덱스 구축 실패: 문서 없음")
+                return
+
+            # 토크나이징
+            tokenized_corpus = []
+            for doc, meta in zip(docs, metadatas):
+                subject = meta.get("subject", "") if meta else ""
+                combined = f"{subject} {doc}"
+                tokenized_corpus.append(self._tokenize_for_bm25(combined))
+
+            self.bm25_index = BM25Okapi(tokenized_corpus)
+            self.bm25_doc_ids = list(ids)
+            self.bm25_corpus = list(docs)
+            self.bm25_metadatas = list(metadatas)
+
+            logger.info(f"  ✅ BM25 인덱스 구축 완료: {len(docs)}개 문서")
+        except Exception as e:
+            logger.error(f"  ❌ BM25 인덱스 구축 실패: {e}")
+            self.bm25_index = None
 
     def compare_collection_similarity(self, question: str) -> dict:
         """컬렉션 유사도 비교 (라우팅용)"""
