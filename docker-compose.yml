@@ -14,6 +14,10 @@ services:
       - REDMINE_URL=${REDMINE_URL:-https://your-redmine.example.com}
       - REDMINE_API_KEY=${REDMINE_API_KEY}
 
+      # --- Embedding Model ---
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-gemini}  # gemini or openai
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+
       # --- Vector DB (Redmine) ---
       - VECTORDB_PATH=/vectordb/chroma_db_v0.2.0
       - COLLECTION_NAME=redmine_issues_raw_v4
@@ -21,6 +25,7 @@ services:
       # --- Vector DB (CRF - Optional) ---
       - CRF_VECTORDB_PATH=/vectordb/crf_data/chroma_db_v0.3.0
       - CRF_COLLECTION_NAME=crf_all_cancers_v0.3.0
+      - CRF_EMBEDDING_MODEL=${CRF_EMBEDDING_MODEL:-gemini}
 
       # --- Server ---
       - PORT=8080
@@ -28,8 +33,16 @@ services:
       - LOG_LEVEL=info
       - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
 
+      # --- Admin (comma-separated usernames) ---
+      - ADMIN_USERS=${ADMIN_USERS:-}
+
+      # --- DOCX Export ---
+      - EXPORTS_DIR=/vectordb/exports
+      - DOCX_MODEL=${DOCX_MODEL:-gemini-2.5-pro}
+
       # --- PaperBanana (Optional: diagram generation) ---
       - PAPERBANANA_BASE_URL=${PAPERBANANA_BASE_URL:-}
+      - PAPERBANANA_MAX_CONCURRENT=${PAPERBANANA_MAX_CONCURRENT:-6}
 
       # --- Langfuse (Optional: observability) ---
       - LANGFUSE_HOST=${LANGFUSE_HOST:-}

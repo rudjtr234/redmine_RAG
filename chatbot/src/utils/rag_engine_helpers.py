@@ -27,6 +27,7 @@ import logging
 import re
 import base64
 import json as _json
+from urllib.parse import unquote, urlparse
 from google.genai import types
 from prompts import PROMPT_TEMPLATES
 from config import constants as C
@@ -104,9 +105,24 @@ class QueryHelperMixin:
         """CRF 메타데이터 질문 처리"""
         logger.info("🗂️ CRF 메타데이터 질문 감지 → 전체 현황 요약")
 
-        where_filter = {"hospital": hospital_code} if hospital_code else None
-        data = self.collection.get(where=where_filter, include=["metadatas"])
-        metadatas = data.get("metadatas") or []
+        if hospital_code:
+            # hospital 메타 없는 암종(위암/대장암/HRD)은 전체 로드 후 본문 파싱으로 필터
+            data_all = self.collection.get(where={"hospital": hospital_code}, include=["metadatas"])
+            if len(data_all.get("metadatas") or []) < 3:
+                data_all = self.collection.get(include=["metadatas", "documents"])
+                docs_tmp = data_all.get("documents") or []
+                metas_tmp = data_all.get("metadatas") or []
+                filtered = [
+                    m for d, m in zip(docs_tmp, metas_tmp)
+                    if (m or {}).get("hospital") == hospital_code
+                    or self._extract_hospital_code_from_text(d or "") == hospital_code
+                ]
+                metadatas = filtered if filtered else metas_tmp
+            else:
+                metadatas = data_all.get("metadatas") or []
+        else:
+            data = self.collection.get(include=["metadatas"])
+            metadatas = data.get("metadatas") or []
 
         if not metadatas:
             return {
@@ -129,8 +145,26 @@ class QueryHelperMixin:
         """CRF 통계 질문 처리 (차트 생성 포함)"""
         logger.info("📊 통계 질문 감지 → Python 직접 계산 + 차트 생성")
 
-        where_filter = {"hospital": hospital_code} if hospital_code else None
-        data = self.collection.get(where=where_filter, include=["metadatas", "documents"])
+        if hospital_code:
+            # hospital 메타 없는 암종(위암/대장암/HRD)은 전체 로드 후 본문 파싱으로 필터
+            data_chk = self.collection.get(where={"hospital": hospital_code}, include=["metadatas"])
+            if len(data_chk.get("metadatas") or []) < 3:
+                data_all = self.collection.get(include=["metadatas", "documents"])
+                docs_all = data_all.get("documents") or []
+                metas_all = data_all.get("metadatas") or []
+                filtered_pairs = [
+                    (d, m) for d, m in zip(docs_all, metas_all)
+                    if (m or {}).get("hospital") == hospital_code
+                    or self._extract_hospital_code_from_text(d or "") == hospital_code
+                ]
+                if filtered_pairs:
+                    data = {"documents": [p[0] for p in filtered_pairs], "metadatas": [p[1] for p in filtered_pairs]}
+                else:
+                    data = data_all
+            else:
+                data = self.collection.get(where={"hospital": hospital_code}, include=["metadatas", "documents"])
+        else:
+            data = self.collection.get(include=["metadatas", "documents"])
         logger.info(f"  📦 데이터 로드: {len(data['documents'])}개")
 
         # 통계 계산
@@ -369,11 +403,49 @@ class QueryHelperMixin:
         else:
             return self._generate_document_sources(documents, metadatas, distances)
 
+    @staticmethod
+    def _filter_attachments_by_markdown(doc: str, att_ids: list, att_fnames: dict):
+        """이미지 첨부는 본문 마크다운 참조 기준으로 필터링, 비이미지 파일은 항상 포함.
+        - 마크다운 이미지 문법 없으면 전체 반환 (기존 동작 유지)
+        - 마크다운 있으면: 이미지 파일은 참조된 것만 / docx·pdf 등 비이미지는 항상 포함
+        """
+        IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'}
+
+        def _is_image(fname: str) -> bool:
+            ext = ('.' + fname.rsplit('.', 1)[-1]).lower() if '.' in fname else ''
+            return ext in IMAGE_EXTS
+
+        _MD_IMG_RE = re.compile(r'!\[.*?\]\(([^)"\']+)')
+        matches = _MD_IMG_RE.findall(doc)
+        if not matches:
+            return att_ids, att_fnames
+
+        referenced_fnames = set()
+        for m in matches:
+            try:
+                path = urlparse(unquote(m)).path
+                fname = path.rstrip('/').split('/')[-1].lower()
+                if fname:
+                    referenced_fnames.add(fname)
+            except Exception:
+                continue
+
+        filtered_ids = [
+            aid for aid in att_ids
+            if not _is_image(att_fnames.get(str(aid), ''))   # 비이미지: 항상 포함
+            or att_fnames.get(str(aid), '').lower() in referenced_fnames  # 이미지: 참조된 것만
+        ]
+        filtered_fnames = {
+            str(k): v for k, v in att_fnames.items()
+            if str(k) in {str(i) for i in filtered_ids}
+        }
+        return filtered_ids, filtered_fnames
+
     def _generate_redmine_sources(self, documents: list, metadatas: list, distances: list, answer: str) -> list:
         """Redmine 출처 생성"""
         # 답변에서 언급된 이슈 번호 추출
         mentioned_issues = set()
-        for match in re.finditer(r'#(\d+)', answer):
+        for match in re.finditer(r'(?:Issue\s+)?#(\d+)', answer, re.IGNORECASE):
             issue_num = int(match.group(1))
             mentioned_issues.add(issue_num)
 
@@ -388,27 +460,42 @@ class QueryHelperMixin:
                 att_fnames = _json.loads(meta.get("attachment_filenames", "{}"))
             except Exception:
                 att_fnames = {}
+            try:
+                att_ctypes = _json.loads(meta.get("attachment_content_types", "{}"))
+            except Exception:
+                att_ctypes = {}
+            try:
+                att_urls = _json.loads(meta.get("attachment_urls", "{}"))
+            except Exception:
+                att_urls = {}
+            att_ids, att_fnames = self._filter_attachments_by_markdown(doc, att_ids, att_fnames)
+            # content_types / urls도 att_ids 기준으로 맞춤
+            att_id_set = {str(i) for i in att_ids}
+            att_ctypes = {k: v for k, v in att_ctypes.items() if k in att_id_set}
+            att_urls = {k: v for k, v in att_urls.items() if k in att_id_set}
+            project_name = meta.get("project_name") or meta.get("project") or None
             all_sources.append({
+                "type": "redmine",
                 "issue_id": meta.get("issue_id", "N/A"),
                 "subject": meta.get("subject", "N/A"),
                 "distance": float(dist),
                 "content_preview": doc[:200] + "..." if len(doc) > 200 else doc,
                 "url": f"{self.redmine_url}/issues/{meta.get('issue_id', '')}" if meta.get("issue_id") else None,
+                "project_name": project_name,
                 "attachment_ids": att_ids,
                 "attachment_filenames": att_fnames,
+                "attachment_content_types": att_ctypes,
+                "attachment_urls": att_urls,
             })
 
-        # 답변에 언급된 이슈가 있으면 그것만, 없으면 상위 N개
+        # 답변에 언급된 이슈만 반환, 언급 없으면 유사도 상위 5개
+        valid_sources = [src for src in all_sources if src["issue_id"] != "N/A"]
         if mentioned_issues:
-            filtered_sources = [
-                src for src in all_sources
-                if src["issue_id"] != "N/A" and int(src["issue_id"]) in mentioned_issues
-            ]
+            filtered_sources = [src for src in valid_sources if int(src["issue_id"]) in mentioned_issues]
             filtered_sources.sort(key=lambda x: int(x["issue_id"]))
-            logger.info(f"  📌 답변에 언급된 이슈: {len(filtered_sources)}개 (전체 검색: {len(documents)}개)")
+            logger.info(f"  📌 답변 언급 이슈: {len(filtered_sources)}개 (전체 검색: {len(documents)}개)")
         else:
-            top_n = min(5, len(all_sources))
-            filtered_sources = [src for src in all_sources[:top_n] if src["issue_id"] != "N/A"]
+            filtered_sources = valid_sources[:5]
             logger.info(f"  📌 참조 이슈 (언급 없음): {len(filtered_sources)}개 (전체 검색: {len(documents)}개)")
 
         return filtered_sources
@@ -423,11 +510,15 @@ class QueryHelperMixin:
             path_no_match = re.search(r'병리번호:\s*([^\n]+)', doc)
             path_no = path_no_match.group(1).strip() if path_no_match else "N/A"
 
+            sheet = meta.get("sheet", "N/A")
+            cancer_type = meta.get("category") or (sheet.split()[0].lower() if sheet and sheet != "N/A" else "unknown")
             filtered_sources.append({
+                "type": "crf",
                 "record_id": meta.get("record_id", "N/A"),
                 "hospital": meta.get("hospital", "N/A"),
                 "path_no": path_no,
-                "sheet": meta.get("sheet", "N/A"),
+                "sheet": sheet,
+                "cancer_type": cancer_type,
                 "row_index": meta.get("row_index", 0),
                 "distance": float(dist),
                 "content_preview": doc[:200] + "..." if len(doc) > 200 else doc
@@ -441,6 +532,7 @@ class QueryHelperMixin:
         top_n = min(5, len(documents))
         filtered_sources = [
             {
+                "type": "document",
                 "filename": meta.get("filename", "Unknown"),
                 "file_type": meta.get("file_type", "N/A"),
                 "doc_category": meta.get("doc_category", "N/A"),
@@ -520,17 +612,44 @@ class QueryHelperMixin:
                 hospital_code = self._extract_hospital_code_from_question(question)
 
             # Vector DB 검색 (Dense)
-            where_filter = {"hospital": hospital_code} if hospital_code else None
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                where=where_filter,
-                n_results=top_k
-            )
-
-            documents = results.get('documents', [[]])[0]
-            metadatas = results.get('metadatas', [[]])[0]
-            distances = results.get('distances', [[]])[0]
-            dense_ids = results.get('ids', [[]])[0]
+            if hospital_code:
+                # 병원 메타 필터 먼저 시도
+                try:
+                    results = self.collection.query(
+                        query_embeddings=[query_embedding],
+                        where={"hospital": hospital_code},
+                        n_results=top_k
+                    )
+                    docs_tmp = results.get('documents', [[]])[0]
+                    # 결과가 너무 적으면 (stomach/colorectal/hrd) 필터 없이 재검색 후 post-filter
+                    if len(docs_tmp) < top_k // 2:
+                        raise ValueError("sparse")
+                    documents = docs_tmp
+                    metadatas = results.get('metadatas', [[]])[0]
+                    distances = results.get('distances', [[]])[0]
+                    dense_ids = results.get('ids', [[]])[0]
+                except Exception:
+                    # 필터 없이 넓게 검색 후 _filter_by_hospital_with_fallback 로 걸러냄
+                    results = self.collection.query(
+                        query_embeddings=[query_embedding],
+                        n_results=top_k * 3
+                    )
+                    documents = results.get('documents', [[]])[0]
+                    metadatas = results.get('metadatas', [[]])[0]
+                    distances = results.get('distances', [[]])[0]
+                    dense_ids = results.get('ids', [[]])[0]
+                    documents, metadatas, distances = self._filter_by_hospital_with_fallback(
+                        documents, metadatas, distances, hospital_code
+                    )
+            else:
+                results = self.collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=top_k
+                )
+                documents = results.get('documents', [[]])[0]
+                metadatas = results.get('metadatas', [[]])[0]
+                distances = results.get('distances', [[]])[0]
+                dense_ids = results.get('ids', [[]])[0]
 
             # BM25 하이브리드 검색 (Redmine 전용)
             if (self.use_case == "redmine" and
@@ -622,8 +741,13 @@ class QueryHelperMixin:
         return merged_docs, merged_metas, merged_dists
 
     def _post_process_documents(self, documents: list, metadatas: list, distances: list,
-                                question: str, recent_query: bool):
-        """문서 후처리 (재정렬, 필터링 등)"""
+                                question: str, recent_intent: str):
+        """문서 후처리 (재정렬, 필터링 등)
+        recent_intent: 'experiment' | 'report' | 'none'
+          - experiment: 날짜 정렬만 (모델/실험 이슈 우선, 회의/보고 작성자 승격 없음)
+          - report    : 날짜 정렬 + 작성자별 최신 승격 (기존 동작)
+          - none      : 최신 처리 없음
+        """
         # 1. 키워드 보강 검색 (Redmine 전용)
         #    BM25 활성화 시 _augment는 BM25가 대체하므로 건너뜀, _filter는 유지
         if self.use_case == "redmine":
@@ -639,14 +763,18 @@ class QueryHelperMixin:
                     documents, metadatas, distances, keywords
                 )
 
-        # 3. 최신순 재정렬
-        if recent_query:
-            logger.info("  📅 최신 데이터 요청 감지 → 날짜순 재정렬")
+        # 3. 최신순 재정렬 (의도별 분기)
+        if recent_intent == 'experiment':
+            # 실험/모델 질문: 날짜 정렬만 — 회의/보고 이슈가 작성자 승격으로 앞에 오는 것 방지
+            logger.info("  📅 최신 실험/모델 질문 → 날짜순 정렬만 (작성자 승격 없음)")
             documents, metadatas, distances = self._sort_by_recency(documents, metadatas, distances)
-            # 작성자별 가장 최신 이슈를 앞으로 올리기
+        elif recent_intent == 'report':
+            # 보고/회의 질문: 날짜 정렬 + 작성자별 최신 승격 (기존 동작)
+            logger.info("  📅 최신 보고/회의 질문 → 날짜순 정렬 + 작성자 최신 승격")
+            documents, metadatas, distances = self._sort_by_recency(documents, metadatas, distances)
             documents, metadatas, distances = self._promote_latest_per_author(documents, metadatas, distances)
 
-        # 4. 단체 쿼리: 사원별 최신 이슈 보장
+        # 4. 단체 쿼리: 사원별 최신 이슈 보장 (현황 파악용 — 의도 무관하게 유지)
         if self._is_group_query(question):
             logger.info("  👥 단체 쿼리 감지 → 사원별 최신 이슈 보장")
             documents, metadatas, distances = self._ensure_staff_latest_issues(
@@ -684,18 +812,61 @@ class QueryHelperMixin:
             except Exception:
                 gen_span = None
 
-        response = self.genai_client.models.generate_content(
-            model=self.model_name_pro,
-            contents=prompt
-        )
-        answer = response.text
+        # OpenAI LLM — system/user 분리 구조
+        if getattr(self, 'embedding_mode', 'gemini') == 'openai':
+            # prompt에서 system 규칙과 user 내용 분리
+            # <검색된_문서>...</검색된_문서> 이전 부분은 system, 이후는 user
+            import re as _re
+            doc_match = _re.search(r'<검색된_문서>(.*?)</검색된_문서>', prompt, _re.DOTALL)
+            q_match   = _re.search(r'<사용자_질문>(.*?)</사용자_질문>', prompt, _re.DOTALL)
+            rules     = _re.split(r'<검색된_문서>', prompt)[0].strip()
+            docs      = doc_match.group(1).strip() if doc_match else ""
+            question_text = q_match.group(1).strip() if q_match else question
 
-        if gen_span:
-            try:
-                gen_span.update(output=answer, metadata={"model": self.model_name_pro})
-                gen_span.end()
-            except Exception:
-                pass
+            system_msg = rules  # 분류 규칙 + 출력 형식 + 공통 규칙 전체
+            user_msg   = f"## 검색된 문서\n\n{docs}\n\n## 질문\n\n{question_text}"
+
+            oai_response = self.openai_client.chat.completions.create(
+                model=self.model_name_pro,
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user",   "content": user_msg}
+                ]
+            )
+            answer = oai_response.choices[0].message.content
+            usage  = oai_response.usage
+            logger.info(f"  [LLM/openai] model={self.model_name_pro} "
+                        f"prompt_tokens={usage.prompt_tokens} "
+                        f"completion_tokens={usage.completion_tokens} "
+                        f"total_tokens={usage.total_tokens}")
+            if gen_span:
+                try:
+                    gen_span.update(
+                        output=answer,
+                        metadata={
+                            "model": self.model_name_pro,
+                            "provider": "openai",
+                            "prompt_tokens": usage.prompt_tokens,
+                            "completion_tokens": usage.completion_tokens,
+                            "total_tokens": usage.total_tokens,
+                        }
+                    )
+                    gen_span.end()
+                except Exception:
+                    pass
+        else:
+            # Gemini LLM (기존)
+            response = self.genai_client.models.generate_content(
+                model=self.model_name_pro,
+                contents=prompt
+            )
+            answer = response.text
+            if gen_span:
+                try:
+                    gen_span.update(output=answer, metadata={"model": self.model_name_pro, "provider": "gemini"})
+                    gen_span.end()
+                except Exception:
+                    pass
 
         # 6. 출처 생성
         sources = self._generate_sources(documents, metadatas, distances, answer)

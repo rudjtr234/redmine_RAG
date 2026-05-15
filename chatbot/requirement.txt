@@ -20,3 +20,5 @@ requests==2.31.0
 python-dotenv==1.0.0
 flask-session==0.8.0
 langfuse>=2.0.0,<4.0.0
+python-docx>=1.1.0
+openai>=1.0.0

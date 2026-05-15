@@ -5,7 +5,7 @@ import multiprocessing
 import os
 
 # 서버 소켓
-port = int(os.environ.get("PORT", 50001))
+port = int(os.environ.get("PORT", 8080))
 bind = f"0.0.0.0:{port}"
 backlog = 2048
 

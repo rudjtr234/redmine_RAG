@@ -1,9 +1,13 @@
-"""Redmine RAG Engine - ChromaDB + Gemini (리팩토링 버전)"""
+"""Redmine RAG Engine - ChromaDB + Gemini/OpenAI 전환 가능"""
 import logging
 import os
 import re
 import chromadb
 from google import genai
+try:
+    from openai import OpenAI as _OpenAI
+except ImportError:
+    _OpenAI = None
 try:
     from langfuse import Langfuse as _Langfuse
 except ImportError:
@@ -21,7 +25,8 @@ class RedmineRAG(RAGHelperMixin, CRFStatisticsMixin, QueryHelperMixin):
     def __init__(self, vectordb_path: str, collection_name: str, gemini_api_key: str,
                  redmine_url: str = None, use_case: str = "redmine",
                  conversation_db_path: str = None, crf_collection_name: str = None):
-        logger.info(f"🔧 RAG 엔진 초기화: {collection_name} (gemini)")
+        embedding_mode = os.environ.get("EMBEDDING_MODEL", "gemini")
+        logger.info(f"🔧 RAG 엔진 초기화: {collection_name} (embedding={embedding_mode})")
 
         self.redmine_url = redmine_url or "https://your-redmine.example.com"
         self.use_case = use_case
@@ -52,15 +57,29 @@ class RedmineRAG(RAGHelperMixin, CRFStatisticsMixin, QueryHelperMixin):
             logger.warning(f"  ⚠️ 대화 이력 초기화 실패: {e}")
             self.conversation_collection = None
 
-        # Gemini Client 생성
+        # Gemini Client (답변 생성 / CRF 통계 등 공통 사용)
         self.genai_client = genai.Client(api_key=gemini_api_key)
-        self.model_name = 'gemini-2.5-pro'
-        self.model_name_pro = 'gemini-2.5-pro'
 
-        logger.info(f"✅ Gemini Client 초기화 완료 (모델: {self.model_name_pro})")
-
-        # gemini-embedding-001: 안정 버전 (권장)
-        self.embedding_model_name = "models/gemini-embedding-001"
+        # LLM 모델 선택: EMBEDDING_MODEL=openai 이면 gpt-5.5, 아니면 gemini
+        embedding_mode = os.environ.get("EMBEDDING_MODEL", "gemini")
+        if embedding_mode == "openai":
+            openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+            if _OpenAI and openai_api_key:
+                self.openai_client = _OpenAI(api_key=openai_api_key)
+                self.model_name     = "gpt-5.5"
+                self.model_name_pro = "gpt-5.5"
+                self.embedding_model_name = "text-embedding-3-large"  # 3072차원
+                self.embedding_mode = "openai"
+                logger.info(f"✅ OpenAI Client 초기화 완료 (LLM={self.model_name_pro}, embed={self.embedding_model_name})")
+            else:
+                raise RuntimeError("OPENAI_API_KEY 없음 또는 openai 패키지 미설치")
+        else:
+            self.openai_client    = None
+            self.model_name       = "gemini-2.5-pro"
+            self.model_name_pro   = "gemini-2.5-pro"
+            self.embedding_model_name = "models/gemini-embedding-001"
+            self.embedding_mode   = "gemini"
+            logger.info(f"✅ Gemini Client 초기화 완료 (LLM={self.model_name_pro}, embed={self.embedding_model_name})")
 
         # BM25 인덱스 초기화 (Redmine 전용)
         self.bm25_index = None
@@ -106,7 +125,7 @@ class RedmineRAG(RAGHelperMixin, CRFStatisticsMixin, QueryHelperMixin):
         self._current_trace = None
 
     def query(self, question: str, chat_history: list = None, session_id: str = None,
-              engine_name: str = None, route_reason: str = None) -> dict:
+              engine_name: str = None, route_reason: str = None, conversation_id: str = None) -> dict:
         """
         질문에 대한 답변 생성 (Multi-turn 지원 + 과거 대화 검색)
 
@@ -139,7 +158,8 @@ class RedmineRAG(RAGHelperMixin, CRFStatisticsMixin, QueryHelperMixin):
                     logger.warning(f"⚠️ Langfuse span 시작 실패: {e}")
                     self._lf_span = None
 
-            recent_query = self._is_recent_query(question)
+            recent_intent = self._classify_recent_intent(question)  # 'experiment' | 'report' | 'none'
+            recent_query = recent_intent != 'none'  # 하위 호환 (candidate_k 결정용)
 
             # 1. 특수 질문 타입 처리 (early return)
             if self._is_general_conversation(question):
@@ -173,8 +193,9 @@ class RedmineRAG(RAGHelperMixin, CRFStatisticsMixin, QueryHelperMixin):
             relevant_history = []
             if session_id and len(chat_history) >= C.CHAT_HISTORY_CONFIG['search_history_threshold']:
                 relevant_history = self.search_conversation_history(
-                    session_id, question, 
-                    top_k=C.CHAT_HISTORY_CONFIG['max_relevant_history']
+                    session_id, question,
+                    top_k=C.CHAT_HISTORY_CONFIG['max_relevant_history'],
+                    conversation_id=conversation_id
                 )
                 if relevant_history:
                     logger.info(f"  📚 관련 과거 대화: {len(relevant_history)}개 발견")
@@ -202,7 +223,7 @@ class RedmineRAG(RAGHelperMixin, CRFStatisticsMixin, QueryHelperMixin):
 
             # 9. 문서 후처리 (버전 재정렬, 최신순 정렬, 키워드 보강)
             documents, metadatas, distances = self._post_process_documents(
-                documents, metadatas, distances, question, recent_query
+                documents, metadatas, distances, question, recent_intent
             )
 
             # 10. 컨텍스트 구성 및 답변 생성
